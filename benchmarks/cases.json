@@ -1,0 +1,180 @@
+[
+  {
+    "name": "trivial-ok",
+    "class": "trivial",
+    "prompt": "Reply with exactly the word OK and nothing else.",
+    "expect": "\\bOK\\b"
+  },
+  {
+    "name": "trivial-arith",
+    "class": "trivial",
+    "prompt": "What is 2 + 2? Answer with the number only.",
+    "expect": "\\b4\\b"
+  },
+  {
+    "name": "trivial-capital",
+    "class": "trivial",
+    "prompt": "What is the capital of France? One word.",
+    "expect": "\\bParis\\b"
+  },
+  {
+    "name": "format-json-to-csv",
+    "class": "format",
+    "prompt": "Convert this JSON to CSV with a header row, nothing else: [{\"id\":1,\"name\":\"ada\"},{\"id\":2,\"name\":\"linus\"}]",
+    "expect": "id,name[\\s\\S]*1,ada[\\s\\S]*2,linus"
+  },
+  {
+    "name": "format-snake-case",
+    "class": "format",
+    "prompt": "Rewrite these identifiers in snake_case, one per line, nothing else: userName, HTTPResponseCode, isAdminFlag",
+    "expect": "user_name[\\s\\S]*http_response_code[\\s\\S]*is_admin_flag"
+  },
+  {
+    "name": "format-sort-list",
+    "class": "format",
+    "prompt": "Sort these words alphabetically and output them space separated on one line, nothing else: pear apple fig cherry",
+    "expect": "apple\\s+cherry\\s+fig\\s+pear"
+  },
+  {
+    "name": "lookup-http-429",
+    "class": "lookup",
+    "prompt": "What does HTTP status 429 mean? One sentence.",
+    "expect": "too many requests|rate.?limit"
+  },
+  {
+    "name": "lookup-chmod-755",
+    "class": "lookup",
+    "prompt": "What permissions does chmod 755 grant? Be brief.",
+    "expect": "(owner|user)[\\s\\S]{0,80}(read|rwx|write)"
+  },
+  {
+    "name": "lookup-tcp-udp",
+    "class": "lookup",
+    "prompt": "In two sentences, what is the main difference between TCP and UDP?",
+    "expect": "connection|reliab|acknowled|ordered"
+  },
+  {
+    "name": "code-reverse-string",
+    "class": "code-short",
+    "prompt": "Write a Python function that reverses a string. Code only.",
+    "expect": "def\\s+\\w+[\\s\\S]*(\\[::-1\\]|reversed)"
+  },
+  {
+    "name": "code-sql-duplicates",
+    "class": "code-short",
+    "prompt": "Write a SQL query that finds duplicate email values in a table users(id, email). Query only.",
+    "expect": "(?is)group\\s+by[\\s\\S]*having[\\s\\S]*count"
+  },
+  {
+    "name": "code-binary-search",
+    "class": "code-short",
+    "prompt": "Write an iterative binary search in Python returning the index or -1. Code only.",
+    "expect": "(?s)while[\\s\\S]*(mid|lo|hi|left|right)"
+  },
+  {
+    "name": "reason-off-by-one",
+    "class": "code-reasoning",
+    "prompt": "This Python function is meant to return the last n items of a list but fails when n is 0: def tail(xs, n): return xs[-n:]. Explain why and give the corrected function.",
+    "expect": "(?s)(n\\s*==\\s*0|zero|empty)[\\s\\S]*def\\s+tail"
+  },
+  {
+    "name": "reason-complexity",
+    "class": "code-reasoning",
+    "prompt": "Why is this O(n^2) and how would you make it O(n)?\n\ndef has_dup(xs):\n    for i in range(len(xs)):\n        for j in range(i+1, len(xs)):\n            if xs[i] == xs[j]: return True\n    return False",
+    "expect": "(?i)(set|hash|dict)"
+  },
+  {
+    "name": "reason-race-condition",
+    "class": "code-reasoning",
+    "prompt": "Two threads run: read counter, add one, write counter. Explain the race condition and name two different fixes.",
+    "expect": "(?i)(lock|mutex|atomic|compare.and.swap|cas)"
+  },
+  {
+    "name": "math-two-trains",
+    "class": "math",
+    "prompt": "A train leaves Milan at 09:00 at 120 km/h. Another leaves Rome at 09:30 at 150 km/h on the same 570 km line, heading towards it. At what time do they meet? Reason it through.",
+    "expect": "\\b11[:.]23\\b"
+  },
+  {
+    "name": "math-same-colour",
+    "class": "math",
+    "prompt": "A bag holds 3 red and 5 blue balls. Two are drawn without replacement. What is the probability that both are the same colour? Give the exact fraction.",
+    "expect": "13\\s*/\\s*28"
+  },
+  {
+    "name": "math-two-pipes",
+    "class": "math",
+    "prompt": "Two pipes fill a tank in 6 hours and 9 hours respectively. Working together, how long do they take? Give hours and minutes.",
+    "expect": "3\\s*(h|hours?)[\\s\\S]{0,20}36|3\\.6\\s*hours|18/5"
+  },
+  {
+    "name": "math-rectangle",
+    "class": "math",
+    "prompt": "A rectangle has perimeter 34 and area 60. What are its side lengths?",
+    "expect": "(?s)\\b12\\b[\\s\\S]{0,40}\\b5\\b|\\b5\\b[\\s\\S]{0,40}\\b12\\b"
+  },
+  {
+    "name": "math-modular",
+    "class": "math",
+    "prompt": "What is 7^100 mod 11? Show the reasoning.",
+    "expect": "(?s)(answer|result|=|is)\\s*\\**\\s*1\\b"
+  },
+  {
+    "name": "puzzle-river-crossing",
+    "class": "puzzle",
+    "prompt": "A farmer must ferry a wolf, a goat and a cabbage across a river. The boat holds the farmer and one item. The wolf eats the goat if left alone with it; the goat eats the cabbage if left alone with it. What is the minimum number of river crossings, and what are they?",
+    "expect": "\\b7\\b"
+  },
+  {
+    "name": "puzzle-cryptarithm",
+    "class": "puzzle",
+    "prompt": "Solve SEND + MORE = MONEY, where each letter is a distinct digit. Give the value of MONEY.",
+    "expect": "10652"
+  },
+  {
+    "name": "puzzle-knights-knaves",
+    "class": "puzzle",
+    "prompt": "On an island, knights always tell the truth and knaves always lie. A says 'We are both knaves'. What are A and B?",
+    "expect": "(?is)A[\\s\\S]{0,60}knave[\\s\\S]{0,120}B[\\s\\S]{0,60}knight"
+  },
+  {
+    "name": "tool-weather",
+    "class": "tool-call",
+    "prompt": "What is the weather in Milan right now? Use the available tool.",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get the current weather for a city",
+          "parameters": {
+            "type": "object",
+            "properties": { "city": { "type": "string" } },
+            "required": ["city"]
+          }
+        }
+      }
+    ],
+    "expect_tool": "get_weather"
+  },
+  {
+    "name": "tool-sql",
+    "class": "tool-call",
+    "prompt": "How many users signed up yesterday? Query the database with the tool.",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "run_sql",
+          "description": "Run a read-only SQL query",
+          "parameters": {
+            "type": "object",
+            "properties": { "query": { "type": "string" } },
+            "required": ["query"]
+          }
+        }
+      }
+    ],
+    "expect_tool": "run_sql"
+  }
+]
