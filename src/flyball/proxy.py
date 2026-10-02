@@ -126,6 +126,8 @@ def create_app(settings: Settings) -> FastAPI:
             {
                 "status": "ok",
                 "mode": settings.mode,
+                "kill_switch": settings.kill_switch.exists(),
+                "thresholds": settings.thresholds,
                 "upstream": settings.upstream,
                 "upstream_reachable": upstream_ok,
             }
@@ -174,9 +176,11 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
         and path.rstrip("/").endswith("chat/completions")
     ):
         try:
-            tracker = observe(ledger, settings.mode, body)
+            tracker, body = observe(ledger, settings, body)
         except Exception:  # observation must never cost a response
-            log.exception("shadow observation failed; forwarding untouched")
+            # `body` is only reassigned on success, so a failure here always
+            # forwards the original request.
+            log.exception("observation failed; forwarding untouched")
             tracker = None
 
     upstream_request = client.build_request(

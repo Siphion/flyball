@@ -224,3 +224,89 @@ def test_non_streaming_outcome_has_no_ttft(tmp_path) -> None:
     outcome = join(tmp_path)[0]["outcome"]
     assert outcome["content_chars"] == 2
     assert outcome["ttft_s"] is None, "time to first token is meaningless without streaming"
+
+
+# --- active mode: every gate is a reason not to act ---------------------------
+
+TRIVIAL = {"model": "m", "stream": True, "messages": [{"role": "user", "content": "Reply with OK"}]}
+SEEN_BODIES: list[bytes] = []
+
+
+def recording_upstream(request: httpx.Request) -> httpx.Response:
+    SEEN_BODIES.append(request.content)
+    return fake_upstream(request)
+
+
+def active_client(tmp_path, *, thresholds=None, share=1.0) -> TestClient:
+    SEEN_BODIES.clear()
+    settings = Settings(
+        upstream="http://upstream.invalid",
+        mode="active",
+        data_dir=tmp_path,
+        thresholds={} if thresholds is None else thresholds,
+        ab_treatment_share=share,
+    )
+    app = create_app(settings)
+    client = TestClient(app)
+    client.__enter__()
+    app.state.client = httpx.AsyncClient(transport=httpx.MockTransport(recording_upstream))
+    return client
+
+
+def _send(client: TestClient, body: dict) -> dict:
+    with client.stream("POST", "/v1/chat/completions", json=body) as reply:
+        b"".join(reply.iter_bytes())
+    return json.loads(SEEN_BODIES[-1])
+
+
+def test_active_without_a_fitted_threshold_changes_nothing(tmp_path) -> None:
+    sent = _send(active_client(tmp_path), TRIVIAL)
+    assert "chat_template_kwargs" not in sent
+    assert join(tmp_path)[0]["policy_reason"].startswith("no fitted threshold")
+
+
+def test_active_with_threshold_disables_thinking_on_a_trivial_request(tmp_path) -> None:
+    client = active_client(tmp_path, thresholds={"needs_deliberation": 0.8})
+    sent = _send(client, TRIVIAL)
+    assert sent["chat_template_kwargs"] == {"enable_thinking": False}
+    row = join(tmp_path)[0]
+    assert row["applied"] is True and row["bucket"] == "treatment"
+
+
+def test_control_bucket_is_logged_but_untouched(tmp_path) -> None:
+    client = active_client(tmp_path, thresholds={"needs_deliberation": 0.8}, share=0.0)
+    sent = _send(client, TRIVIAL)
+    assert "chat_template_kwargs" not in sent
+    row = join(tmp_path)[0]
+    assert row["applied"] is False and row["would_apply"] is True and row["bucket"] == "control"
+
+
+def test_reasoning_requests_keep_thinking(tmp_path) -> None:
+    client = active_client(tmp_path, thresholds={"needs_deliberation": 0.0})
+    sent = _send(client, CHAT)
+    assert "chat_template_kwargs" not in sent
+
+
+def test_a_client_choice_is_never_overridden(tmp_path) -> None:
+    client = active_client(tmp_path, thresholds={"needs_deliberation": 0.0})
+    sent = _send(client, dict(TRIVIAL, reasoning_effort="xhigh"))
+    assert "chat_template_kwargs" not in sent
+
+
+def test_kill_switch_stops_decisions_without_a_restart(tmp_path) -> None:
+    client = active_client(tmp_path, thresholds={"needs_deliberation": 0.8})
+    (tmp_path / "KILL").touch()
+    sent = _send(client, TRIVIAL)
+    assert "chat_template_kwargs" not in sent
+    assert join(tmp_path)[0]["policy_reason"] == "kill switch is set"
+
+
+def test_every_turn_of_a_conversation_lands_in_the_same_bucket() -> None:
+    from flyball.policy import conversation_bucket
+
+    turn1 = {"messages": [{"role": "user", "content": "first question"}]}
+    turn2 = {"messages": turn1["messages"] + [
+        {"role": "assistant", "content": "an answer"},
+        {"role": "user", "content": "a follow-up"},
+    ]}
+    assert conversation_bucket(turn1, 0.5) == conversation_bucket(turn2, 0.5)

@@ -29,6 +29,29 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = _env(name)
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
+# FLYBALL_THRESHOLD_NEEDS_DELIBERATION=0.85 and so on, one variable per question.
+_THRESHOLD_PREFIX = "FLYBALL_THRESHOLD_"
+
+
+def _thresholds_from_env() -> dict:
+    out = {}
+    for name, raw in os.environ.items():
+        if name.startswith(_THRESHOLD_PREFIX) and raw.strip():
+            try:
+                out[name[len(_THRESHOLD_PREFIX) :].lower()] = float(raw)
+            except ValueError:
+                continue
+    return out
+
+
 @dataclass
 class Settings:
     """Runtime configuration for the flyball daemon."""
@@ -43,6 +66,15 @@ class Settings:
     mode: str = field(default_factory=lambda: _env("FLYBALL_MODE", "off"))
     data_dir: Path = field(default_factory=lambda: Path(_env("FLYBALL_DATA_DIR", "./data")))
 
+    # Confidence thresholds per question, fitted on held-out data. A question with
+    # no threshold is never acted on, even in active mode: there is deliberately
+    # no universal default to fall back to.
+    thresholds: dict = field(default_factory=lambda: _thresholds_from_env())
+
+    # Share of conversations that receive the decision in active mode. The rest
+    # are the control arm, logged as "would have applied".
+    ab_treatment_share: float = field(default_factory=lambda: _env_float("FLYBALL_AB_SHARE", 0.5))
+
     # Local models are slow. A short read timeout would abort perfectly healthy
     # generations, so only connect and write are bounded by default.
     connect_timeout: float = 5.0
@@ -55,3 +87,8 @@ class Settings:
 
     def upstream_url(self, path: str) -> str:
         return f"{self.upstream}/{path.lstrip('/')}"
+
+    @property
+    def kill_switch(self) -> Path:
+        """Create this file to stop every decision immediately, without a restart."""
+        return self.data_dir / "KILL"

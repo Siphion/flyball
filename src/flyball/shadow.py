@@ -14,7 +14,9 @@ import uuid
 from dataclasses import dataclass, field
 
 from . import heuristic
+from .config import Settings
 from .ledger import Ledger
+from .policy import plan
 from .state import STATE_VERSION, build_state
 
 
@@ -102,28 +104,34 @@ class OutcomeTracker:
         }
 
 
-def observe(ledger: Ledger, mode: str, raw_body: bytes) -> OutcomeTracker | None:
-    """Record a decision for a chat completion request. Returns a tracker, or None
-    when the request is not something flyball reasons about."""
+def observe(
+    ledger: Ledger, settings: Settings, raw_body: bytes
+) -> tuple[OutcomeTracker | None, bytes]:
+    """Decide on a chat completion request, record the decision, and return a
+    tracker plus the body to send: the original, unless active mode rewrote it."""
     try:
         body = json.loads(raw_body)
     except ValueError:
-        return None
+        return None, raw_body
     if not isinstance(body, dict) or not body.get("messages"):
-        return None
+        return None, raw_body
 
     state = build_state(body)
     started = time.time()
     decision = heuristic.decide(state)
     decided_in = time.time() - started
+    action = plan(settings, body, state, decision, killed=settings.kill_switch.exists())
 
     decision_id = uuid.uuid4().hex
     ledger.decisions.write(
         {
             "decision_id": decision_id,
             "ts": round(started, 3),
-            "mode": mode,
-            "applied": False,
+            "mode": settings.mode,
+            "applied": action.applied,
+            "would_apply": action.would_apply,
+            "policy_reason": action.reason,
+            "bucket": action.bucket,
             "model": body.get("model", ""),
             "schema_sha256": heuristic.SCHEMA_SHA256,
             "state_version": STATE_VERSION,
@@ -137,4 +145,5 @@ def observe(ledger: Ledger, mode: str, raw_body: bytes) -> OutcomeTracker | None
             "last_user_excerpt": state.last_user_excerpt,
         }
     )
-    return OutcomeTracker(decision_id=decision_id, started=started, streaming=state.stream)
+    tracker = OutcomeTracker(decision_id=decision_id, started=started, streaming=state.stream)
+    return tracker, (action.body if action.applied and action.body else raw_body)
