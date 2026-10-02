@@ -244,6 +244,11 @@ def main() -> int:
     parser.add_argument("--only-class", help="restrict to one class, for a second-stage sweep")
     parser.add_argument("--group-by", default="case_class", choices=["case_class", "case"])
     parser.add_argument("--out", type=Path, default=Path("reports/reasoning_cuts.csv"))
+    parser.add_argument(
+        "--traces",
+        type=Path,
+        help="also write every reasoning and answer in full, one JSON object per run",
+    )
     args = parser.parse_args()
 
     cases = json.loads(args.cases.read_text(encoding="utf-8")) if args.cases else DEFAULT_CASES
@@ -272,6 +277,14 @@ def main() -> int:
         results.append(run)
         writer.writerow(vars(run))
         handle.flush()
+
+    # Full texts go to a separate file: they are large, and they are what the
+    # mid-stream research needs, where the CSV only carries lengths.
+    traces = None
+    if args.traces:
+        args.traces.parent.mkdir(parents=True, exist_ok=True)
+        traces = args.traces.open("w", encoding="utf-8")
+
     # Interleaved: every arm of every case within one repeat, then repeat again.
     for repeat in range(args.runs):
         for case in cases:
@@ -295,6 +308,18 @@ def main() -> int:
                     correct, result["control_ok"] is True, result["control_ok"],
                     result["cut_fired_at_s"],
                 ))
+                if traces is not None:
+                    traces.write(json.dumps({
+                        "case": case["name"],
+                        "case_class": case.get("class", "?"),
+                        "cut": cut,
+                        "repeat": repeat,
+                        "correct": correct,
+                        "seconds": result["seconds"],
+                        "reasoning": result["reasoning"],
+                        "content": result["content"],
+                    }, ensure_ascii=False) + "\n")
+                    traces.flush()
                 print(label + " {:6.1f}s  ttft {:>5}  reasoning {:>5}  answer {:>5}  correct={}".format(
                     result["seconds"],
                     "{:.1f}s".format(result["ttft_s"]) if result["ttft_s"] else "-",
@@ -305,6 +330,8 @@ def main() -> int:
         return 1
 
     handle.close()
+    if traces is not None:
+        traces.close()
 
     summarise(results, args.group_by)
     never_fired = sorted({

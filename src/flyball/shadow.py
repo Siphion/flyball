@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from . import heuristic
 from .ledger import Ledger
-from .state import build_state
+from .state import STATE_VERSION, build_state
 
 
 @dataclass
@@ -126,6 +126,7 @@ def observe(ledger: Ledger, mode: str, raw_body: bytes) -> OutcomeTracker | None
             "applied": False,
             "model": body.get("model", ""),
             "schema_sha256": heuristic.SCHEMA_SHA256,
+            "state_version": STATE_VERSION,
             "backend": decision.backend,
             "decide_ms": round(decided_in * 1000, 3),
             "values": decision.values,

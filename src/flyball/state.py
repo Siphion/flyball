@@ -16,6 +16,18 @@ from dataclasses import asdict, dataclass
 # classify a request, short enough that a decision log is not a transcript.
 EXCERPT_CHARS = 600
 
+# Bump whenever a feature is added or its meaning changes. Every decision row
+# carries it, so that a dataset never mixes features computed two different ways.
+STATE_VERSION = 2
+
+# A request *for* code, as opposed to code already present in the message.
+_CODE_REQUEST = re.compile(
+    r"\b(write|implement|create|refactor|generate)\b[^.?!\n]{0,40}"
+    r"\b(function|class|method|query|script|regex|program|test|snippet|code)s?\b|"
+    r"\b(python|javascript|typescript|sql|rust|golang|java|c\+\+|c#|bash|powershell)\b",
+    re.I,
+)
+
 _CODE = re.compile(
     r"```|\bdef |\bclass |\bfunction\b|\breturn\b|=>|#include|\bSELECT\b|\bimport\b|;\s*$",
     re.I | re.M,
@@ -113,7 +125,7 @@ def build_state(body: dict) -> RequestState:
         stream=bool(body.get("stream")),
         last_user_chars=len(last_user),
         total_chars=total_chars,
-        code_markers=len(_CODE.findall(last_user)),
+        code_markers=len(_CODE.findall(last_user)) + len(_CODE_REQUEST.findall(last_user)),
         math_markers=len(_MATH.findall(last_user)),
         reasoning_markers=len(_REASONING.findall(last_user)),
         format_markers=len(_FORMAT.findall(last_user)),

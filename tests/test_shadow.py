@@ -163,6 +163,10 @@ def test_state_is_deterministic() -> None:
         ("Convert this JSON to CSV, nothing else: [1]", False, "format", False),
         ("A bag has 3 red balls. What is the probability of two red?", False, "reasoning", True),
         ("What is the weather in Milan?", True, "tool", False),
+        # A request for code is code even when it ends with "only", which the
+        # formatting markers also match.
+        ("Write a Python function that reverses a string. Code only.", False, "code", True),
+        ("Write a SQL query that finds duplicate emails. Query only.", False, "code", True),
     ],
 )
 def test_heuristic_classes(text, tools, klass, deliberate) -> None:

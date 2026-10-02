@@ -47,8 +47,12 @@ def report(data_dir: Path) -> int:
         return 1
 
     with_outcome = [r for r in rows if r["outcome"]]
-    print("decisions {}   with outcome {}   schema versions {}".format(
-        len(rows), len(with_outcome), len({r.get("schema_sha256") for r in rows})))
+    print("decisions {}   with outcome {}   schema versions {}   state versions {}".format(
+        len(rows),
+        len(with_outcome),
+        len({r.get("schema_sha256") for r in rows}),
+        len({r.get("state_version") for r in rows}),
+    ))
     print()
 
     groups: dict[str, list[dict]] = defaultdict(list)

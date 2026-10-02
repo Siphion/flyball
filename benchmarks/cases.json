@@ -93,49 +93,57 @@
     "name": "math-two-trains",
     "class": "math",
     "prompt": "A train leaves Milan at 09:00 at 120 km/h. Another leaves Rome at 09:30 at 150 km/h on the same 570 km line, heading towards it. At what time do they meet? Reason it through.",
-    "expect": "\\b11[:.]23\\b"
+    "expect": "\\b11[:.]23\\b",
+    "answer": "\\b11[:.]23\\b"
   },
   {
     "name": "math-same-colour",
     "class": "math",
     "prompt": "A bag holds 3 red and 5 blue balls. Two are drawn without replacement. What is the probability that both are the same colour? Give the exact fraction.",
-    "expect": "13\\s*/\\s*28|\\\\frac\\{13\\}\\{28\\}"
+    "expect": "13\\s*/\\s*28|\\\\frac\\{13\\}\\{28\\}",
+    "answer": "13\\s*/\\s*28|\\\\frac\\{13\\}\\{28\\}"
   },
   {
     "name": "math-two-pipes",
     "class": "math",
     "prompt": "Two pipes fill a tank in 6 hours and 9 hours respectively. Working together, how long do they take? Give hours and minutes.",
-    "expect": "(?s)3\\s*(h|hours?)[\\s\\S]{0,20}36|3\\.6\\s*h|18\\s*/\\s*5|\\\\frac\\{18\\}\\{5\\}"
+    "expect": "(?s)3\\s*(h|hours?)[\\s\\S]{0,20}36|3\\.6\\s*h|18\\s*/\\s*5|\\\\frac\\{18\\}\\{5\\}",
+    "answer": "3\\s*h(ours?)?\\s*(and\\s*)?36|3\\.6\\s*h|18\\s*/\\s*5|\\\\frac\\{18\\}\\{5\\}|216\\s*min"
   },
   {
     "name": "math-rectangle",
     "class": "math",
     "prompt": "A rectangle has perimeter 34 and area 60. What are its side lengths?",
-    "expect": "(?s)\\b12\\b[\\s\\S]{0,40}\\b5\\b|\\b5\\b[\\s\\S]{0,40}\\b12\\b"
+    "expect": "(?s)\\b12\\b[\\s\\S]{0,40}\\b5\\b|\\b5\\b[\\s\\S]{0,40}\\b12\\b",
+    "answer": "\\b5\\s*(and|,|x|by)\\s*12\\b|\\b12\\s*(and|,|x|by)\\s*5\\b"
   },
   {
     "name": "math-modular",
     "class": "math",
     "prompt": "What is 7^100 mod 11? Show the reasoning.",
-    "expect": "(?s)\\\\boxed\\{\\s*1\\s*\\}|\\\\equiv\\s*1\\b|(answer|result|=|is|equals)\\s*\\**\\s*1\\b"
+    "expect": "(?s)\\\\boxed\\{\\s*1\\s*\\}|\\\\equiv\\s*1\\b|(answer|result|=|is|equals)\\s*\\**\\s*1\\b",
+    "answer": "7\\^\\{?100\\}?[^\\n]{0,30}(\\\\equiv|=|is)\\s*1\\b"
   },
   {
     "name": "puzzle-river-crossing",
     "class": "puzzle",
     "prompt": "A farmer must ferry a wolf, a goat and a cabbage across a river. The boat holds the farmer and one item. The wolf eats the goat if left alone with it; the goat eats the cabbage if left alone with it. What is the minimum number of river crossings, and what are they?",
-    "expect": "\\b7\\b"
+    "expect": "\\b7\\b",
+    "answer": "\\b(7|seven)\\s+(river\\s+)?(crossings|trips)\\b"
   },
   {
     "name": "puzzle-cryptarithm",
     "class": "puzzle",
     "prompt": "Solve SEND + MORE = MONEY, where each letter is a distinct digit. Give the value of MONEY.",
-    "expect": "10652"
+    "expect": "10652",
+    "answer": "10652"
   },
   {
     "name": "puzzle-knights-knaves",
     "class": "puzzle",
     "prompt": "On an island, knights always tell the truth and knaves always lie. A says 'We are both knaves'. What are A and B?",
-    "expect": "(?is)A[\\s\\S]{0,60}knave[\\s\\S]{0,120}B[\\s\\S]{0,60}knight"
+    "expect": "(?is)A[\\s\\S]{0,60}knave[\\s\\S]{0,120}B[\\s\\S]{0,60}knight",
+    "answer": "(?is)\\bA\\b[^.]{0,40}knave[^.]{0,120}\\bB\\b[^.]{0,40}knight"
   },
   {
     "name": "tool-weather",
