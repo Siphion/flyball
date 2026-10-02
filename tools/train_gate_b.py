@@ -143,9 +143,30 @@ def main() -> int:
     x_calib, y_calib = matrix("calib")
     x_test, y_test = matrix("test")
 
-    model = fit_logistic(x_train, y_train, l2=args.l2)
-    fit_platt(model, x_calib, y_calib)
-    prob = model.probability(x_test)
+    # Model selection uses the calibration split only. The test split is looked at
+    # once, at the end; choosing anything on it would make its numbers optimistic.
+    dense = len(DENSE_NAMES)
+    word_mask = np.zeros(x_train.shape[1])
+    word_mask[:dense] = 1.0
+
+    candidates = []
+    for words in (False, True):
+        for l2 in (0.1, 1.0, 10.0, 100.0):
+            mask = np.ones(x_train.shape[1]) if words else word_mask
+            candidate = fit_logistic(x_train * mask, y_train, l2=l2)
+            score = auc(candidate.raw_score(x_calib * mask), y_calib)
+            candidates.append((score, words, l2, candidate, mask))
+            print("  selection on calibration split: words={!s:5} l2={:<6} AUC {:.3f}".format(
+                words, l2, score))
+    _, words, l2, model, mask = max(candidates, key=lambda c: c[0])
+    print("  chosen: words={} l2={}".format(words, l2))
+    if not words:
+        # Dense-only: the word weights are exactly zero, so the saved model does
+        # not depend on the hashed features at all.
+        model.weights = model.weights * mask
+
+    fit_platt(model, x_calib * mask, y_calib)
+    prob = model.probability(x_test * mask)
     model.save(args.model_out)
 
     print()

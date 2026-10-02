@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-FEATURE_VERSION = 1
+FEATURE_VERSION = 2
 HASH_DIMS = 4096
 TAIL_CHARS = 300
 WINDOW_CHARS = 300
@@ -88,6 +88,11 @@ def dense_features(prompt: str, prefix: str) -> dict[str, float]:
         "prompt_numbers_used": (
             len(prompt_numbers & set(prefix_numbers)) / len(prompt_numbers) if prompt_numbers else 1.0
         ),
+        # How hard the problem looks. Measured on GSM8K, risk tracks difficulty more
+        # than position: long reasoning belongs to hard problems, and that is where a
+        # cut is most likely to be premature.
+        "log_prompt_chars": math.log1p(len(prompt)),
+        "prompt_numbers": float(len(prompt_numbers)),
     }
 
 
@@ -173,8 +178,14 @@ class GateBModel:
 
 def fit_logistic(x: np.ndarray, y: np.ndarray, l2: float = 1.0, steps: int = 3000) -> GateBModel:
     """Plain gradient descent with Adam: small data, no need for anything heavier."""
-    mean = x.mean(axis=0)
-    scale = x.std(axis=0)
+    # Only the hand-made features are standardised. The hashed word counts are
+    # already normalised and almost always zero: standardising them would turn a word
+    # seen once into an enormous value, and the model would learn that noise.
+    dense = len(DENSE_NAMES)
+    mean = np.zeros(x.shape[1])
+    scale = np.ones(x.shape[1])
+    mean[:dense] = x[:, :dense].mean(axis=0)
+    scale[:dense] = x[:, :dense].std(axis=0)
     scale[scale < 1e-9] = 1.0
     z = (x - mean) / scale
     n, d = z.shape

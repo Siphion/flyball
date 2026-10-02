@@ -93,3 +93,35 @@ rules do not recognise "has thought enough".
   wrote the result in a form the pattern does not cover.
 - Characters, not tokens, are the unit throughout, because that is what the stream
   exposes most directly.
+
+## 4. First learned governor, on GSM8K: a negative result
+
+300 problems from the GSM8K training split, uncut traces, and 1,560 checkpoints labelled
+by the teacher (`tools/probe_traces.py`: close the reasoning at the checkpoint, let the
+model answer greedily, grade the answer). Problems were split by name into train,
+calibration and test; configuration was chosen on the calibration split only.
+
+| policy (61 held-out traces) | accuracy | reasoning cut |
+|---|---|---|
+| never cut | 93.4% | 0% |
+| fixed budget, 400 characters | 93.4% | **19%** |
+| learned, threshold 0.85 | 91.8% | 20% |
+| learned, threshold 0.90 | 93.4% | 0% |
+| oracle: first safe checkpoint | 98.4% | 62% |
+
+**At equal accuracy a fixed budget beats the learned governor**, 19% against 0%. The
+classifier does learn something (AUC 0.63 on held-out problems, after fixing a scaling
+bug that had turned rare hashed words into noise), but not enough.
+
+The reason is the data, not only the model: **GSM8K is too easy for this model to need
+governing.** Ninety per cent of checkpoints are already safe before 200 characters of
+reasoning, so almost any cut works and a fixed budget is enough. Risk tracks problem
+difficulty rather than position: the latest checkpoints are the riskiest, because only
+hard problems produce long reasoning. The regime where a governor can beat a fixed
+budget, where the right cut point varies by a factor of twenty, is the one the puzzle
+cases showed, and GSM8K does not contain it.
+
+The oracle's 98.4% is not evidence that cutting improves answers: it gets up to twelve
+attempts per trace and keeps the first correct one, so some of those are lucky guesses.
+
+Next: the same pipeline on hard problems with checkable answers.
