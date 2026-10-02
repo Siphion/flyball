@@ -181,10 +181,28 @@ class Client:
             return False
 
 
+_NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
+
+def last_number(text: str) -> str | None:
+    """The last number in a text, without thousands separators: the usual way to
+    read a GSM8K answer, since the reference number also appears in the working."""
+    found = _NUMBER.findall(text)
+    if not found:
+        return None
+    value = found[-1].replace(",", "")
+    # 12.00 and 12.0 are 12: money amounts are often written with cents.
+    if "." in value:
+        value = value.rstrip("0").rstrip(".")
+    return value
+
+
 def grade(case: dict, result: dict) -> bool | None:
     """None means this case has no machine-checkable expectation."""
     if case.get("expect_tool"):
         return case["expect_tool"] in result["tool_names"]
+    if case.get("reference_answer") is not None:
+        return last_number(result["content"]) == last_number(case["reference_answer"])
     if case.get("expect"):
         return bool(re.search(case["expect"], result["content"], re.I))
     return None
