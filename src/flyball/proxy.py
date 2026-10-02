@@ -23,6 +23,8 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import Settings
+from .ledger import Ledger
+from .shadow import observe
 
 log = logging.getLogger("flyball.proxy")
 
@@ -78,6 +80,8 @@ def create_app(settings: Settings) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    # In off mode nothing is recorded: no ledger, no files, no observation.
+    app.state.ledger = Ledger(settings.data_dir) if settings.mode != "off" else None
 
     @app.get("/flyball/health")
     async def health() -> JSONResponse:
@@ -115,6 +119,23 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
         headers["Authorization"] = f"Bearer {settings.upstream_api_key}"
 
     body = await request.body()
+
+    # The decision is taken before the request leaves, for two reasons: a
+    # non-streaming upstream only answers once generation is over, so timing has
+    # to start here; and in active mode the decision will reshape the request.
+    tracker = None
+    ledger = getattr(app.state, "ledger", None)
+    if (
+        ledger is not None
+        and request.method == "POST"
+        and path.rstrip("/").endswith("chat/completions")
+    ):
+        try:
+            tracker = observe(ledger, settings.mode, body)
+        except Exception:  # observation must never cost a response
+            log.exception("shadow observation failed; forwarding untouched")
+            tracker = None
+
     upstream_request = client.build_request(
         request.method,
         url,
@@ -137,12 +158,31 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
             status_code=502,
         )
 
+    if tracker is not None:
+        tracker.status = reply.status_code
+        if "content-encoding" in reply.headers:
+            # A compressed body cannot be read from a raw copy; the outcome row
+            # will carry the status and timings only.
+            tracker.unreadable = True
+
     async def passthrough() -> AsyncIterator[bytes]:
+        completed = False
         try:
             async for chunk in reply.aiter_raw():
+                if tracker is not None:
+                    try:
+                        tracker.feed(chunk)
+                    except Exception:
+                        log.exception("outcome tracking failed for one chunk")
                 yield chunk
+            completed = True
         finally:
             await reply.aclose()
+            if tracker is not None:
+                try:
+                    ledger.outcomes.write(tracker.finish(completed))
+                except Exception:
+                    log.exception("could not record the outcome")
 
     return StreamingResponse(
         passthrough(),

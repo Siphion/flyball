@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import sys
+from pathlib import Path
 
 from . import __version__
 from .config import MODES, Settings
@@ -17,8 +18,16 @@ def _settings_from(args: argparse.Namespace) -> Settings:
         value = getattr(args, name, None)
         if value is not None:
             setattr(settings, name, value)
+    if getattr(args, "data_dir", None):
+        settings.data_dir = Path(args.data_dir)
     settings.__post_init__()
     return settings
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    from .stats import report
+
+    return report(_settings_from(args).data_dir)
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -82,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     # subcommand, which is where everyone types them.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--upstream", help="OpenAI-compatible server that runs the model")
+    common.add_argument("--data-dir", help="where the decision ledger is written")
     common.add_argument(
         "--log-level", default="info", choices=["debug", "info", "warning", "error"]
     )
@@ -96,6 +106,9 @@ def main(argv: list[str] | None = None) -> int:
     probe = sub.add_parser("probe", help="report what the upstream supports", parents=[common])
     probe.add_argument("--json", action="store_true", help="machine-readable output")
     probe.set_defaults(func=cmd_probe)
+
+    stats = sub.add_parser("stats", help="summarise the decision ledger", parents=[common])
+    stats.set_defaults(func=cmd_stats)
 
     args = parser.parse_args(argv)
     logging.basicConfig(
