@@ -1,0 +1,27 @@
+# Decision and outcome logs contain raw prompts: never commit them.
+data/
+*.jsonl
+logs/
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Measurement artifacts
+reports/
+*.csv
+!docs/**/*.csv

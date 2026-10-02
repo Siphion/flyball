@@ -1,0 +1,38 @@
+[project]
+name = "flyballd"
+version = "0.0.1"
+description = "A System-1 governor for your local model's reasoning: closes the thinking block mid-stream when it has thought enough."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Siphion" }]
+keywords = ["llm", "local-inference", "llama-cpp", "reasoning", "decision-models", "system-one"]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4"]
+
+[project.scripts]
+flyballd = "flyball.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Siphion/flyball"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

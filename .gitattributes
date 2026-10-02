@@ -1,0 +1,5 @@
+# Normalise line endings so that a Windows checkout does not churn the diff
+# for everyone else.
+* text=auto eol=lf
+*.png binary
+*.gguf binary
