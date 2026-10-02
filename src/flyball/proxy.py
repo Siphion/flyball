@@ -14,6 +14,7 @@ In `off` mode this module is the whole program.
 
 from __future__ import annotations
 
+import hmac
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -43,6 +44,35 @@ HOP_BY_HOP = frozenset(
         "content-length",
     }
 )
+
+
+# Reachable without a key, as on llama-server: a liveness probe has to work before
+# any client has been configured.
+PUBLIC_PATHS = frozenset({"health", "v1/health"})
+
+
+def _client_key(headers) -> str:
+    auth = headers.get("authorization", "")
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip()
+    return headers.get("x-api-key", "").strip()
+
+
+def _authorised(settings: Settings, path: str, request: Request) -> bool:
+    """When FLYBALL_API_KEY is set, every client must present it.
+
+    This is what keeps an exposed flyball from becoming an open door to the model:
+    the upstream's own key is replaced on the way through, so the upstream can no
+    longer tell an authorised client from anyone else on the network.
+    """
+    if not settings.api_key:
+        return True
+    # CORS preflights never carry credentials; refusing them breaks browsers
+    # without protecting anything.
+    if request.method == "OPTIONS" or path.strip("/") in PUBLIC_PATHS:
+        return True
+    supplied = _client_key(request.headers)
+    return bool(supplied) and hmac.compare_digest(supplied.encode(), settings.api_key.encode())
 
 
 def _forwardable(headers: httpx.Headers | dict, drop_auth: bool) -> dict[str, str]:
@@ -112,6 +142,19 @@ def create_app(settings: Settings) -> FastAPI:
 
 
 async def _forward(app: FastAPI, settings: Settings, path: str, request: Request) -> Response:
+    if not _authorised(settings, path, request):
+        # Same shape llama-server uses, so clients show a familiar error.
+        return JSONResponse(
+            {
+                "error": {
+                    "code": 401,
+                    "message": "Invalid API Key",
+                    "type": "authentication_error",
+                }
+            },
+            status_code=401,
+        )
+
     client: httpx.AsyncClient = app.state.client
     url = settings.upstream_url(path)
     headers = _forwardable(request.headers, drop_auth=bool(settings.upstream_api_key))

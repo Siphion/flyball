@@ -108,3 +108,50 @@ def test_own_health_does_not_touch_the_model(client: TestClient) -> None:
     body = client.get("/flyball/health").json()
     assert body["mode"] == "off"
     assert body["upstream_reachable"] is True
+
+
+# --- client authentication -------------------------------------------------
+
+
+@pytest.fixture
+def guarded():
+    SEEN.clear()
+    settings = Settings(
+        upstream="http://upstream.invalid",
+        mode="off",
+        api_key="client-secret",
+        upstream_api_key="server-secret",
+    )
+    app = create_app(settings)
+    with TestClient(app) as test_client:
+        app.state.client = httpx.AsyncClient(transport=httpx.MockTransport(fake_upstream))
+        yield test_client
+
+
+def test_missing_key_is_refused_before_reaching_the_model(guarded: TestClient) -> None:
+    reply = guarded.get("/v1/models")
+    assert reply.status_code == 401
+    assert reply.json()["error"]["type"] == "authentication_error"
+    assert SEEN == [], "an unauthenticated request must never reach the upstream"
+
+
+def test_wrong_key_is_refused(guarded: TestClient) -> None:
+    reply = guarded.get("/v1/models", headers={"Authorization": "Bearer guess"})
+    assert reply.status_code == 401
+    assert SEEN == []
+
+
+def test_right_key_passes_and_is_swapped_for_the_upstream_key(guarded: TestClient) -> None:
+    reply = guarded.get("/v1/models", headers={"Authorization": "Bearer client-secret"})
+    assert reply.status_code == 200
+    assert SEEN[-1].headers["authorization"] == "Bearer server-secret"
+
+
+def test_x_api_key_header_is_accepted(guarded: TestClient) -> None:
+    assert guarded.get("/v1/models", headers={"x-api-key": "client-secret"}).status_code == 200
+
+
+def test_liveness_and_preflight_stay_public(guarded: TestClient) -> None:
+    assert guarded.get("/health").status_code == 200
+    assert guarded.get("/flyball/health").status_code == 200
+    assert guarded.options("/v1/chat/completions").status_code != 401
