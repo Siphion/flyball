@@ -261,6 +261,17 @@ def main() -> int:
 
     results: list[Run] = []
     done = 0
+    # Rows are flushed as they are produced: a sweep can run for hours, and an
+    # interrupted run must keep everything it measured so far.
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    handle = args.out.open("w", newline="", encoding="utf-8")
+    writer = csv.DictWriter(handle, fieldnames=[f.name for f in fields(Run)])
+    writer.writeheader()
+
+    def record(run: Run) -> None:
+        results.append(run)
+        writer.writerow(vars(run))
+        handle.flush()
     # Interleaved: every arm of every case within one repeat, then repeat again.
     for repeat in range(args.runs):
         for case in cases:
@@ -272,12 +283,12 @@ def main() -> int:
                     result = client.generate(case, cut or None)
                 except Exception as exc:  # noqa: BLE001
                     print(label + " FAILED: " + repr(exc))
-                    results.append(Run(
+                    record(Run(
                         case["name"], case.get("class", "?"), cut, repeat,
                         0.0, None, 0, 0, None, False, None, error=repr(exc)))
                     continue
                 correct = grade(case, result)
-                results.append(Run(
+                record(Run(
                     case["name"], case.get("class", "?"), cut, repeat,
                     result["seconds"], result["ttft_s"],
                     len(result["reasoning"]), len(result["content"]),
@@ -293,12 +304,7 @@ def main() -> int:
         print("no results")
         return 1
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=[f.name for f in fields(Run)])
-        writer.writeheader()
-        for row in results:
-            writer.writerow(vars(row))
+    handle.close()
 
     summarise(results, args.group_by)
     never_fired = sorted({

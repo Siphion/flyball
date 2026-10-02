@@ -99,13 +99,13 @@
     "name": "math-same-colour",
     "class": "math",
     "prompt": "A bag holds 3 red and 5 blue balls. Two are drawn without replacement. What is the probability that both are the same colour? Give the exact fraction.",
-    "expect": "13\\s*/\\s*28"
+    "expect": "13\\s*/\\s*28|\\frac\\{13\\}\\{28\\}"
   },
   {
     "name": "math-two-pipes",
     "class": "math",
     "prompt": "Two pipes fill a tank in 6 hours and 9 hours respectively. Working together, how long do they take? Give hours and minutes.",
-    "expect": "3\\s*(h|hours?)[\\s\\S]{0,20}36|3\\.6\\s*hours|18/5"
+    "expect": "(?s)3\\s*(h|hours?)[\\s\\S]{0,20}36|3\\.6\\s*h|18\\s*/\\s*5|\\frac\\{18\\}\\{5\\}"
   },
   {
     "name": "math-rectangle",
@@ -117,7 +117,7 @@
     "name": "math-modular",
     "class": "math",
     "prompt": "What is 7^100 mod 11? Show the reasoning.",
-    "expect": "(?s)(answer|result|=|is)\\s*\\**\\s*1\\b"
+    "expect": "(?s)\\boxed\\{\\s*1\\s*\\}|(answer|result|=|is|equals)\\s*\\**\\s*1\\b"
   },
   {
     "name": "puzzle-river-crossing",
@@ -149,8 +149,14 @@
           "description": "Get the current weather for a city",
           "parameters": {
             "type": "object",
-            "properties": { "city": { "type": "string" } },
-            "required": ["city"]
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ]
           }
         }
       }
@@ -169,8 +175,14 @@
           "description": "Run a read-only SQL query",
           "parameters": {
             "type": "object",
-            "properties": { "query": { "type": "string" } },
-            "required": ["query"]
+            "properties": {
+              "query": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ]
           }
         }
       }
