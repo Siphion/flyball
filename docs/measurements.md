@@ -31,13 +31,16 @@ Median wall clock and correct answers out of 8.
 | math-two-trains | 18.1 s 8/8 | 6.6 s 6/8 | 5.9 s 5/8 | 8.0 s 7/8 | **9.9 s 8/8** | 14.9 s 7/8 |
 | math-two-pipes | 2.7 s 8/8 | 1.9 s 8/8 | 2.7 s 8/8 | 2.4 s 8/8 | 2.1 s 7/8 | 1.7 s 8/8 |
 | math-rectangle | 2.8 s 8/8 | 2.3 s 8/8 | 2.7 s 8/8 | 2.8 s 8/8 | 2.4 s 8/8 | 2.2 s 8/8 |
+| math-modular | 5.3 s 8/8 | 3.1 s 8/8 | 4.4 s 8/8 | 5.2 s 8/8 | 5.5 s 8/8 | 5.3 s 8/8 |
+| math-same-colour | 3.3 s 8/8 | 2.7 s 8/8 | 3.0 s 8/8 | 3.1 s 8/8 | 2.9 s 8/8 | 3.1 s 8/8 |
 | reason-off-by-one | 8.0 s 7/8 | **3.4 s 8/8** | 3.5 s 7/8 | 3.9 s 7/8 | 5.1 s 8/8 | 8.4 s 8/8 |
 | reason-complexity | 8.1 s 8/8 | **5.5 s 8/8** | 6.5 s 8/8 | 6.9 s 8/8 | 9.2 s 8/8 | 9.4 s 8/8 |
 | reason-race-condition | 4.6 s 8/8 | 3.5 s 8/8 | 3.2 s 8/8 | 4.0 s 8/8 | 4.5 s 8/8 | 4.9 s 8/8 |
 
-`math-same-colour` and `math-modular` are excluded: their grading regexes were broken
-(`\frac` and `\boxed` were read as regex escapes), so the model's correct LaTeX answers
-were scored as wrong. The regexes are fixed; those two cases need to be re-run.
+`math-same-colour` and `math-modular` were first scored wrong in every arm, including the
+untouched one: their grading regexes were broken (`\frac` and `\boxed` were read as regex
+escapes), so the model's correct LaTeX answers did not match. After the fix both cases
+were re-run on their own with the same design, and their rows come from that re-run.
 
 ## What the data says
 
@@ -60,5 +63,5 @@ ideally while watching the reasoning unfold.
   reliable where the gap is large; small differences are not.
 - Wall-clock times depend on this hardware. The relative saving and the correctness are
   what should transfer.
-- Correctness is checked by regex. Grading bugs are possible, as the two excluded cases
+- Correctness is checked by regex. Grading bugs are possible, as the two re-run cases
   show; every surprising cell should be checked against the raw output.
