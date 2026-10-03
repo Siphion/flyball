@@ -42,12 +42,18 @@ import time
 import urllib.request
 from pathlib import Path
 
+import sys
+
 import numpy as np
 
 from measure_reasoning_cut import final_answer, last_number
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from flyball.governor import anchor_message  # noqa: E402
+
 PROBE_SUFFIX = "\n</think>\n\n**Final Answer**\n\n\\boxed"
-ORDERS = [("never", "budget", "governor"), ("budget", "governor", "never"), ("governor", "never", "budget")]
+ARMS = ("never", "budget", "governor", "anchored")
+GOVERNED = ("governor", "anchored")
 
 
 class Server:
@@ -115,7 +121,7 @@ class Server:
                 reason = None
                 if arm == "budget" and chars >= budget:
                     reason = "budget"
-                elif arm == "governor":
+                elif arm in GOVERNED:
                     if chars >= cap:
                         reason = "cap"
                     elif chars >= next_probe:
@@ -137,7 +143,11 @@ class Server:
                             probe["message"] = reply.get("message", "")
                         probes.append(probe)
                 if reason:
-                    ended = self.control({"id": completion_id, "action": "reasoning_end", "model": "default"})
+                    payload = {"id": completion_id, "action": "reasoning_end", "model": "default"}
+                    if arm == "anchored":
+                        answer = probes[-1].get("answer") if probes and reason == "confident" else None
+                        payload["message"] = anchor_message(reason, answer)
+                    ended = self.control(payload)
                     cut = {"reason": reason, "at": chars, "ok": bool(ended.get("success")),
                            "at_s": round(time.perf_counter() - started, 2)}
 
@@ -160,61 +170,70 @@ def summarise(runs_path: Path, cases_path: Path, n_boot: int = 2000) -> None:
     runs = [json.loads(line) for line in runs_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     by = {}
     for run in runs:
+        if "error" in run:
+            continue
         if "content" in run:
             # graded again from the text, with the grader as it is now
             run["answer"] = final_answer(run["content"])
             run["correct"] = run["answer"] == last_number(cases[run["case"]]["reference_answer"])
         by.setdefault(run["case"], {})[run["arm"]] = run
-    complete = [name for name, arms in by.items() if len(arms) == 3 and all("error" not in r for r in arms.values())]
-    print("{} problems with all three arms".format(len(complete)))
+    arms = [arm for arm in ARMS if any(arm in a for a in by.values())]
+    complete = [name for name, a in by.items() if all(arm in a for arm in arms)]
+    print("{} problems with every arm ({})".format(len(complete), ", ".join(arms)))
 
     def table(names: list[str], title: str) -> None:
         if not names:
             return
         print()
         print("{} ({} problems)".format(title, len(names)))
-        print("  {:9} {:>9} {:>14} {:>13} {:>12} {:>11} {:>8}".format(
-            "arm", "accuracy", "mean seconds", "per request", "in total", "reasoning", "cuts"))
-        never_t = np.array([by[n]["never"]["seconds"] for n in names])
+        baseline = "never" if "never" in arms else None
+        print("  {:9} {:>9} {:>13} {:>12} {:>9} {:>10} {:>6} {:>13} {:>9} {:>6}".format(
+            "arm", "accuracy", "mean seconds", "per request", "in total", "reasoning", "cuts",
+            "reply after", "long", "empty"))
+        print("  {:9} {:>9} {:>13} {:>12} {:>9} {:>10} {:>6} {:>13} {:>9} {:>6}".format(
+            "", "", "", "(vs never)", "", "", "", "a cut (med.)", "replies", ""))
+        base_t = np.array([by[n][baseline]["seconds"] for n in names]) if baseline else None
         stats = {}
-        for arm in ("never", "budget", "governor"):
+        for arm in arms:
             r = [by[n][arm] for n in names]
             t = np.array([x["seconds"] for x in r])
             correct = np.array([x["correct"] for x in r], dtype=float)
-            per_request = float(np.mean((never_t - t) / never_t))
-            in_total = float((never_t.sum() - t.sum()) / never_t.sum())
-            cuts = sum(1 for x in r if x["cut"])
             stats[arm] = (correct, t)
-            print("  {:9} {:>8.1%} {:>13.1f}s {:>12.0%} {:>12.0%} {:>11.0f} {:>8}".format(
-                arm, correct.mean(), t.mean(), per_request, in_total,
-                np.mean([x["reasoning_chars"] for x in r]), cuts))
+            cut = [x for x in r if x["cut"]]
+            per_request = float(np.mean((base_t - t) / base_t)) if baseline else float("nan")
+            in_total = float((base_t.sum() - t.sum()) / base_t.sum()) if baseline else float("nan")
+            print("  {:9} {:>8.1%} {:>12.1f}s {:>12} {:>9} {:>10.0f} {:>6} {:>13} {:>9} {:>6}".format(
+                arm, correct.mean(), t.mean(),
+                "{:.0%}".format(per_request) if baseline else "-", "{:.0%}".format(in_total) if baseline else "-",
+                np.mean([x["reasoning_chars"] for x in r]), len(cut),
+                int(np.median([x["content_chars"] for x in cut])) if cut else "-",
+                sum(1 for x in cut if x["content_chars"] > 5000),
+                sum(1 for x in cut if x["content_chars"] == 0)))
+
         rng = np.random.default_rng(0)
-        g_c, g_t = stats["governor"]
-        b_c, b_t = stats["budget"]
-        diffs = []
-        for _ in range(n_boot):
-            i = rng.integers(0, len(names), len(names))
-            diffs.append((
-                g_c[i].mean() - b_c[i].mean(),
-                np.mean((never_t[i] - g_t[i]) / never_t[i]) - np.mean((never_t[i] - b_t[i]) / never_t[i]),
-                (b_t[i].sum() - g_t[i].sum()) / never_t[i].sum(),
-            ))
-        low, high = np.percentile(np.array(diffs), [2.5, 97.5], axis=0)
-        print("  governor minus budget, 95% interval: accuracy [{:+.1%}, {:+.1%}]  "
-              "time saved per request [{:+.0%}, {:+.0%}]  in total [{:+.0%}, {:+.0%}]".format(
-                  low[0], high[0], low[1], high[1], low[2], high[2]))
-        probes = [p for n in names for p in by[n]["governor"]["probes"]]
-        if probes:
+        samples = [rng.integers(0, len(names), len(names)) for _ in range(n_boot)]
+        for a, b in (("governor", "budget"), ("anchored", "governor"), ("anchored", "budget")):
+            if a not in stats or b not in stats:
+                continue
+            a_c, a_t = stats[a]
+            b_c, b_t = stats[b]
+            diffs = np.array([(a_c[i].mean() - b_c[i].mean(), 1 - a_t[i].sum() / b_t[i].sum()) for i in samples])
+            low, high = np.percentile(diffs, [2.5, 97.5], axis=0)
+            print("  {} minus {}, 95% interval: accuracy [{:+.1%}, {:+.1%}]  time saved in total [{:+.0%}, {:+.0%}]".format(
+                a, b, low[0], high[0], low[1], high[1]))
+
+        for arm in (a for a in arms if a in GOVERNED):
+            probes = [p for n in names for p in by[n][arm]["probes"]]
             ok = [p for p in probes if p["ok"]]
-            print("  probes: {} ({} failed), {:.1f} per request, median {:.0f} ms".format(
-                len(probes), len(probes) - len(ok), len(probes) / len(names),
-                float(np.median([p["ms"] for p in ok])) if ok else float("nan")))
-        reasons = {}
-        for n in names:
-            cut = by[n]["governor"]["cut"]
-            key = cut["reason"] if cut else "no cut"
-            reasons[key] = reasons.get(key, 0) + 1
-        print("  governor cuts: " + ", ".join("{} {}".format(k, v) for k, v in sorted(reasons.items())))
+            reasons = {}
+            for n in names:
+                cut = by[n][arm]["cut"]
+                key = cut["reason"] if cut else "no cut"
+                reasons[key] = reasons.get(key, 0) + 1
+            print("  {}: {} probes ({} failed), median {:.0f} ms; cuts: {}".format(
+                arm, len(probes), len(probes) - len(ok),
+                float(np.median([p["ms"] for p in ok])) if ok else float("nan"),
+                ", ".join("{} {}".format(k, v) for k, v in sorted(reasons.items()))))
 
     table(complete, "All problems")
     for prefix in ("math", "gsm8k"):
@@ -227,13 +246,15 @@ def main() -> int:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--summary", type=Path, help="only summarise an existing runs file")
     parser.add_argument("--only", help="run only the cases whose name starts with this")
+    parser.add_argument("--arms", default="never,budget,governor",
+                        help="comma-separated, from: " + ", ".join(ARMS))
     parser.add_argument("--upstream", default="http://127.0.0.1:8081")
     parser.add_argument("--api-key", default=os.environ.get("FLYBALL_UPSTREAM_API_KEY", ""))
     parser.add_argument("--effort", default="xhigh")
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--budget", type=int, default=2400, help="characters, for the budget arm")
     parser.add_argument("--confidence", type=float, default=0.8)
-    parser.add_argument("--cap", type=int, default=3200, help="characters, for the governor arm")
+    parser.add_argument("--cap", type=int, default=3200, help="characters, for the governed arms")
     args = parser.parse_args()
 
     if args.summary:
@@ -241,6 +262,10 @@ def main() -> int:
         return 0
     if not args.out:
         parser.error("--out is required to run")
+    arms = [a.strip() for a in args.arms.split(",") if a.strip()]
+    unknown = [a for a in arms if a not in ARMS]
+    if unknown:
+        parser.error("unknown arm(s): " + ", ".join(unknown))
 
     cases = json.loads(args.cases.read_text(encoding="utf-8"))
     if args.only:
@@ -254,12 +279,14 @@ def main() -> int:
                     done.add((row["case"], row["arm"]))
 
     server = Server(args.upstream, args.api_key, args.effort, args.max_tokens)
-    total = len(cases) * 3
+    total = len(cases) * len(arms)
     count = 0
     with args.out.open("a", encoding="utf-8") as handle:
         for index, case in enumerate(cases):
             reference = last_number(case["reference_answer"])
-            for arm in ORDERS[index % len(ORDERS)]:
+            # The order of the arms rotates from one problem to the next.
+            shift = index % len(arms)
+            for arm in arms[shift:] + arms[:shift]:
                 count += 1
                 if (case["name"], arm) in done:
                     continue

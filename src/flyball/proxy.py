@@ -177,7 +177,11 @@ def _start_governor(
             return {"success": False, "message": f"HTTP {reply.status_code}: {str(data)[:120]}"}
         return data
 
-    config = GovernorConfig(confidence=settings.governor_confidence, cap=settings.governor_cap)
+    config = GovernorConfig(
+        confidence=settings.governor_confidence,
+        cap=settings.governor_cap,
+        anchor=settings.governor_anchor,
+    )
     return Governor(config=config, control=control, model=model)
 
 

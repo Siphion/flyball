@@ -118,6 +118,28 @@ def test_garbage_in_the_stream_is_ignored() -> None:
     assert not g.stopped
 
 
+def test_an_anchored_cut_commits_to_the_answer_the_probe_found() -> None:
+    control = FakeControl(probes=[("{369", -0.01)])
+    g = drive(governor(control, anchor=True), reasoning(500))
+    end = next(c for c in control.calls if c["action"] == "reasoning_end")
+    assert end["message"] == "\n\nSo the final answer is 369.\n"
+    assert g.cut["message"] == "So the final answer is 369."
+
+
+def test_an_anchored_cap_cut_commits_without_naming_an_answer() -> None:
+    control = FakeControl(probes=[("{12", -3.0)] * 10)
+    drive(governor(control, anchor=True), reasoning(3600))
+    end = next(c for c in control.calls if c["action"] == "reasoning_end")
+    assert "12" not in end["message"] and "final answer" in end["message"]
+
+
+def test_without_anchoring_the_cut_carries_no_message() -> None:
+    control = FakeControl(probes=[("{369", -0.01)])
+    drive(governor(control, anchor=False), reasoning(500))
+    end = next(c for c in control.calls if c["action"] == "reasoning_end")
+    assert "message" not in end
+
+
 def test_answer_numbers_are_read_like_the_research_grader() -> None:
     assert answer_number("{12{,}000") == "12000"
     assert answer_number("{-3") == "-3"

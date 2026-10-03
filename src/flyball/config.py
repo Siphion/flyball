@@ -85,6 +85,12 @@ class Settings:
     )
     governor_confidence: float = field(default_factory=lambda: _env_float("FLYBALL_GOVERNOR_CONFIDENCE", 0.8))
     governor_cap: int = field(default_factory=lambda: _env_int("FLYBALL_GOVERNOR_CAP", 3200))
+    # Close the reasoning with a sentence that commits to the answer the probe found.
+    # On by default: measured live, it kept accuracy and cut total time by a fifth,
+    # because the reply no longer picks the reasoning back up (section 8).
+    governor_anchor: bool = field(
+        default_factory=lambda: _env("FLYBALL_GOVERNOR_ANCHOR", "on").lower() in ("1", "on", "true", "yes")
+    )
 
     # Local models are slow. A short read timeout would abort perfectly healthy
     # generations, so only connect and write are bounded by default.

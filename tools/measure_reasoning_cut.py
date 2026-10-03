@@ -206,7 +206,11 @@ BOX = r"\boxed{"
 def final_answer(text: str) -> str | None:
     r"""The number a reply commits to: the content of the last \boxed{...} when there
     is one, otherwise the last number. Competition maths answers end in a box, and
-    whatever follows the box (a check, a remark) must not be read as the answer."""
+    whatever follows the box (a check, a remark) must not be read as the answer.
+
+    A box that holds no number is an answer too, a non-numeric one: it is not
+    replaced by the last number elsewhere in the text, which would credit a reply
+    that boxed "No such lake exists" because it mentioned 100 on the way."""
     start = text.rfind(BOX)
     if start >= 0:
         depth = 0
@@ -217,10 +221,7 @@ def final_answer(text: str) -> str | None:
             elif text[index] == "}":
                 depth -= 1
                 if depth == 0:
-                    inside = last_number(text[opening + 1:index])
-                    if inside is not None:
-                        return inside
-                    break
+                    return last_number(text[opening + 1:index])
     return last_number(text)
 
 

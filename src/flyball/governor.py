@@ -60,6 +60,17 @@ class GovernorConfig:
     confidence: float = 0.8
     cap: int = 3200
     first_probe: int = 300
+    # Close the reasoning with a sentence that commits to the answer, so that the
+    # reply does not pick the reasoning back up. Needs `reasoning_end` to accept a
+    # message; a server that does not simply ignores it.
+    anchor: bool = True
+
+
+def anchor_message(reason: str, answer: str | None) -> str:
+    """The last sentence of the reasoning, forced in just before it closes."""
+    if reason == "confident" and answer is not None:
+        return "\n\nSo the final answer is {}.\n".format(answer)
+    return "\n\nI'll stop here and give my best final answer.\n"
 
 
 @dataclass
@@ -157,15 +168,20 @@ class Governor:
         record["answer"] = answer_number(str(probe.get("content", "")))
         record["p"] = round(math.exp(float(probe.get("logprob", -math.inf))), 4)
         if record["answer"] is not None and record["p"] >= self.config.confidence:
-            await self._end("confident")
+            await self._end("confident", record["answer"])
 
-    async def _end(self, reason: str) -> None:
+    async def _end(self, reason: str, answer: str | None = None) -> None:
         if self.cut or self.replying:
             return
         at = self.reasoning_chars
-        reply = await self._call({"id": self.completion_id, "action": "reasoning_end", "model": self.model})
+        payload = {"id": self.completion_id, "action": "reasoning_end", "model": self.model}
+        if self.config.anchor:
+            payload["message"] = anchor_message(reason, answer)
+        reply = await self._call(payload)
         self.cut = {"reason": reason, "at": at, "ok": bool(reply.get("success")),
                     "after_s": round(time.time() - self._started, 3)}
+        if self.config.anchor:
+            self.cut["message"] = payload["message"].strip()
         if not self.cut["ok"]:
             self.stopped = "reasoning_end refused: " + str(reply.get("message", ""))[:200]
 

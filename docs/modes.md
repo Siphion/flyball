@@ -71,6 +71,7 @@ confidences, and the cut.
 | `FLYBALL_GOVERNOR` | `off` | `on` to enable it in active mode |
 | `FLYBALL_GOVERNOR_CONFIDENCE` | `0.8` | cut once the model is this confident |
 | `FLYBALL_GOVERNOR_CAP` | `3200` | cut here in any case, in characters of reasoning |
+| `FLYBALL_GOVERNOR_ANCHOR` | `on` | close the reasoning with a sentence that commits to the probe's answer |
 | `FLYBALL_AB_SHARE` | `0.5` | share of conversations governed; the rest are the control arm |
 
 The `probe` action is not part of llama.cpp yet. `flyballd probe` reports whether an

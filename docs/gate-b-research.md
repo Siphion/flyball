@@ -396,3 +396,46 @@ Caveats: one model on one machine; 127 problems, all maths with a numeric answer
 sampling at temperature 1, so every run differs and the intervals are wide. The probe
 is a local patch to llama.cpp. For code or prose, a probe has to ask the model a
 different question than "what is your final answer?".
+
+## 8. Anchoring the cut
+
+Section 7 left two failures that only happen live: after a cut, the model sometimes
+goes on reasoning in its reply, for thousands of characters, and once it wrote no
+reply at all. Both times the probe already had the right answer. The cut threw that
+knowledge away: `reasoning_end` closed the reasoning mid-sentence and left the model
+to find its way back.
+
+So the cut now says where the reasoning got to. `reasoning_end` takes an optional
+`message`, forced into the reasoning just before it closes (a second small patch to
+the local llama.cpp branch, next to the probe; llama.cpp already forces a fixed
+message when a static budget runs out, this one is decided at the moment of the
+cut). The governor closes a confident cut with "So the final answer is X.", X being
+the probe's answer, and a cut at the cap with "I'll stop here and give my best final
+answer."
+
+Same 127 problems, the governor with and without the anchor, interleaved:
+
+| arm | accuracy | mean time | median reply after a cut | replies over 5,000 chars after a cut |
+|---|---|---|---|---|
+| governor | 93.7% | 9.0 s | 368 chars | 2 |
+| anchored | 94.5% | **7.0 s** | **268 chars** | **0** |
+
+Anchored minus governor, 95% intervals: accuracy −3.1 to +4.7 points, time saved in
+total +5 to +37%. The anchor costs nothing measurable in accuracy, and saves a fifth
+of the total time, almost all of it from the replies that no longer run away. The
+problems the two arms disagree on split four and four.
+
+The anchor has a cost in principle: a confident probe that is wrong gets written into
+the reasoning, where the model could otherwise have corrected it in its reply. It
+happened three times in 67 confident cuts. In two of them the plain governor gave the
+same wrong answer; in the third, its run never became confident at all and reasoned
+its way to the right one, so a different sample rather than a correction.
+
+Grading got one more fix on the way, applied to every run kept as text: a reply whose
+box holds no number now reads as no answer, instead of falling back to the last
+number elsewhere in the text. One flawed GSM8K problem (a "square" lake whose length
+and width differ) had been credited because a reply boxed "No such lake exists"
+after mentioning 100.
+
+The anchor is on by default (`FLYBALL_GOVERNOR_ANCHOR`); a server whose
+`reasoning_end` takes no message simply ignores it.
