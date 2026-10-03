@@ -168,10 +168,25 @@ of the time below 0.7, and 96% above 0.85), but MBPP does not need it: code writ
 flyball does not govern code requests until the probe has been measured on code that needs
 its reasoning.
 
-**What the numbers do not say yet.** All of this runs at the highest reasoning effort,
-where the model overthinks most; at a server's default effort the gains are smaller and are
-being measured. One model, one GPU, samples of 75 to 150 problems, intervals that are still
-wide. The full account, including every negative result and the measurement bugs found on
+**At `medium` effort, the gains shrink.** On the same problems, with the governor's
+settings from the highest effort:
+
+| | maths: accuracy | mean time | MMLU-Pro: accuracy | mean time |
+|---|---|---|---|---|
+| never cut | 96.1% | 11.9 s | 66.7% | 21.7 s |
+| fixed budget | 96.1% | 8.1 s | 60.0% | 11.3 s |
+| governor | 93.7% | 8.4 s | **68.0%** | **9.6 s** |
+
+On maths the governor only ties the fixed budget: at `medium` the model reasons less, so
+there is less to cut, and on short problems the probes cost more than they save. On
+multiple choice it still wins, by 6 to 25% of total time. Two more things follow from this
+table. Uncut, `medium` is more accurate than the highest effort on Bonsai 2 (96.1% against
+92.1% on maths, 66.7% against 60.0% on MMLU-Pro), so the highest effort mostly overthinks.
+And a governor tuned for `medium`, probing only reasoning that runs long, is being measured
+now, together with Gate A: choosing per request whether to think less.
+
+**What the numbers do not say yet.** One model, one GPU, samples of 75 to 150 problems,
+intervals that are still wide. The full account, including every negative result and the measurement bugs found on
 the way, is in **[docs/gate-b-research.md](docs/gate-b-research.md)**.
 
 ## Quick start

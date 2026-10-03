@@ -34,9 +34,10 @@ from __future__ import annotations
 
 import os
 
-# A long fit on every core overheats this machine's CPU; four threads are plenty.
+# A long fit on every core overheats this machine's CPU (above 90 C with four
+# threads): two threads, slower and cool.
 for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
-    os.environ.setdefault(_var, "4")
+    os.environ.setdefault(_var, "2")
 
 import argparse  # noqa: E402
 import hashlib  # noqa: E402

@@ -59,7 +59,7 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--latency-sample", type=int, default=30)
-    parser.add_argument("--threads", type=int, default=4, help="CPU threads for local encoders")
+    parser.add_argument("--threads", type=int, default=2, help="CPU threads for local encoders (the CPU runs hot)")
     args = parser.parse_args()
 
     try:

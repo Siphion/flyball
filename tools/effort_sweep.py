@@ -117,10 +117,39 @@ async def sweep(args) -> int:
     return 0
 
 
+def export_traces(out: Path, cases: list[dict], level: str, traces: Path) -> int:
+    """The runs at one level, as uncut reasoning traces for probe_traces.py and the
+    other tools that read measure_reasoning_cut.py's format, graded on the way."""
+    from measure_reasoning_cut import answer_in, reference_of
+
+    by_name = {c["name"]: c for c in cases}
+    count = 0
+    with traces.open("w", encoding="utf-8") as handle:
+        for line in out.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            case = by_name.get(row["case"])
+            if case is None or row["level"] != level or "error" in row:
+                continue
+            answer = answer_in(row["content"], case.get("answer_type", "number"))
+            handle.write(json.dumps({
+                "case": row["case"], "cut": 0, "repeat": row["repeat"], "level": level,
+                "correct": answer is not None and answer == reference_of(case),
+                "seconds": row["seconds"], "reasoning": row["reasoning"], "content": row["content"],
+            }, ensure_ascii=False) + "\n")
+            count += 1
+    print("{} traces at {} written to {}".format(count, level, traces))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--cases", type=Path, action="append", required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--export-traces", metavar="LEVEL",
+                        help="do not run: write the runs at LEVEL as reasoning traces to --traces-out")
+    parser.add_argument("--traces-out", type=Path)
     parser.add_argument("--profile", default="bonsai-2")
     parser.add_argument("--profiles", help="a JSON file of extra profiles")
     parser.add_argument("--server", default="llama.cpp", choices=["llama.cpp", "openai"])
@@ -135,6 +164,10 @@ def main() -> int:
     parser.add_argument("--only", default="", help="only the cases whose name starts with this")
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
+    if args.export_traces:
+        if not args.traces_out:
+            parser.error("--export-traces needs --traces-out")
+        return export_traces(args.out, load_cases(args.cases), args.export_traces, args.traces_out)
     return asyncio.run(sweep(args))
 
 
