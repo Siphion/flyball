@@ -33,6 +33,9 @@ SOURCE = (
 )
 
 
+BOXED = "\n\nPut your final answer within \\boxed{}."
+
+
 def number_pattern(answer: str) -> str:
     """A regex for a numeric answer, tolerant of 1,234 versus 1234."""
     value = answer.replace(",", "").strip()
@@ -54,16 +57,29 @@ def main() -> int:
     parser.add_argument("--n", type=int, default=300)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--out", type=Path, default=Path("reports/gsm8k_cases.json"))
+    parser.add_argument("--prefix", default="gsm8k-train", help="case names are <prefix>-<index>")
+    parser.add_argument("--exclude", type=Path, nargs="*", default=[],
+                        help="case files whose problems must not be drawn again")
+    parser.add_argument("--boxed", action="store_true",
+                        help="ask for the final answer in \\boxed{}, so it can be read without guessing")
     args = parser.parse_args()
 
     raw = urllib.request.urlopen(SOURCE, timeout=60).read().decode("utf-8")
     problems = [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+    used = set()
+    for path in args.exclude:
+        for case in json.loads(path.read_text(encoding="utf-8")):
+            used.add(case["prompt"].strip())
 
     rng = random.Random(args.seed)
     rng.shuffle(problems)
 
     cases = []
     for index, item in enumerate(problems):
+        question = item["question"].strip()
+        if question in used:
+            continue
         answer = item["answer"].rsplit("####", 1)[-1].strip()
         try:
             pattern = number_pattern(answer)
@@ -71,9 +87,9 @@ def main() -> int:
             continue
         cases.append(
             {
-                "name": "gsm8k-train-{:04d}".format(index),
+                "name": "{}-{:04d}".format(args.prefix, index),
                 "class": "gsm8k",
-                "prompt": item["question"].strip(),
+                "prompt": question + (BOXED if args.boxed else ""),
                 "expect": pattern,
                 "answer": pattern,
                 "reference_answer": answer,

@@ -334,3 +334,65 @@ is the governor live in flyball, probing on the doubling schedule, cutting with
 against `--reasoning-budget`. The probe can also get cheaper: saving and restoring
 the state goes through host memory, and a copy kept on the GPU would remove most of
 those 70 ms.
+
+## 7. Live: the governor cutting for real
+
+Up to section 6 the cut was simulated. Here it is real (`tools/govern_live.py`), on
+127 problems never used before: the 67 MATH problems the trace run of section 5 did
+not reach, and 60 new GSM8K problems. Each was answered three times by Bonsai 2, at
+its usual sampling (temperature 1), in an order rotated from problem to problem:
+
+- **never cut**;
+- **fixed budget**: the reasoning closed at 2,400 characters;
+- **governor**: a probe at 300, 600, 1,200 and 2,400 characters, a cut as soon as
+  the model's confidence in its answer reaches 0.8, and a cap at 3,200 characters.
+
+Both operating points were chosen beforehand, on the 454 traces of section 5 and at
+the probe's measured cost. Every prompt asks for a boxed answer, and every reply is
+graded by it.
+
+| arm | accuracy | mean time | time saved per request | time saved in total | reasoning |
+|---|---|---|---|---|---|
+| never cut | 92.1% | 14.4 s | – | – | 2,657 chars |
+| fixed budget | 94.5% | 10.1 s | 4% | 30% | 1,013 chars |
+| governor | **95.3%** | **8.9 s** | **9%** | **38%** | 886 chars |
+
+Governor minus fixed budget, 95% intervals over problems: accuracy −2.4 to +4.7
+points, time saved per request 0 to +11, in total −6 to +24. Time does not depend
+on grading, so the first pass of the experiment (below) counts for it too: over
+both passes, 254 runs per arm, the governor saves +4 to +13 points more per request,
+and −3 to +21 in total.
+
+What happened, in more detail:
+
+- **Cutting made the answers better, not worse**, in both arms. Five times, never
+  cutting meant never answering: the model reasoned until the token limit. A cut
+  rescues those. Against never cutting, the governor lost two answers and won six.
+- **Confidence is a good reason to cut**: 68 confident cuts, 97% of them right. The
+  cap is a worse one, 10 cuts and 70% right, but it only fires on problems where
+  the model never became confident.
+- **The reasoning still moves into the reply, but less after the governor's cuts.**
+  The median reply doubles after a governor cut (158 to 331 characters) and
+  quadruples after a budget cut (202 to 824). A budget stops the model mid-thought;
+  the governor stops one that has settled.
+- **The probe held**: 210 calls, none failed, 221 ms median.
+- **Two failure modes exist only live.** After a confident cut, the model can still
+  go on reasoning in its reply for thousands of characters (three replies over
+  5,000), and in the first pass it once wrote no reply at all. Both times the probe
+  had the right answer. A governor that already knows the answer could act on that.
+
+The first pass graded only the last 300 characters of each reply, and its grader
+read `12{,}000` as `000`. Neither could be fixed after the fact, because only the
+answers had been kept, so the whole experiment was run again with the full texts,
+graded at the end. The accuracy above is the second pass's.
+
+**Verdict.** Live, the governor clears the bar it was set: at least as accurate as
+the fixed budget and as never cutting, and faster per request by a margin that the
+intervals separate from zero once both passes count. In total time it is ahead, but
+not separated: total time is dominated by the few runaway problems, which the budget
+and the cap both cut.
+
+Caveats: one model on one machine; 127 problems, all maths with a numeric answer;
+sampling at temperature 1, so every run differs and the intervals are wide. The probe
+is a local patch to llama.cpp. For code or prose, a probe has to ask the model a
+different question than "what is your final answer?".

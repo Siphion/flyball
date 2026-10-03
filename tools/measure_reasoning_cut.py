@@ -182,12 +182,15 @@ class Client:
 
 
 _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+# Thousands separators as LaTeX writes them: 12{,}000, and the thin spaces 12\,000 and
+# 12\!000. Left in, they split one number into two, and 12{,}000 reads as 000.
+_LATEX_SEPARATOR = re.compile(r"(?<=\d)(?:\{,\}|\\[,!;: ])(?=\d)")
 
 
 def last_number(text: str) -> str | None:
     """The last number in a text, without thousands separators: the usual way to
     read a GSM8K answer, since the reference number also appears in the working."""
-    found = _NUMBER.findall(text)
+    found = _NUMBER.findall(_LATEX_SEPARATOR.sub("", text))
     if not found:
         return None
     value = found[-1].replace(",", "")
