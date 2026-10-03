@@ -282,3 +282,55 @@ here is simulated: a real cut lets the model write a free reply, not a boxed ans
   points: on the 84 calibration problems the fixed budget chose 800 characters, which
   then lost nine points of accuracy on the test split. Cross-validation is the
   reliable read, and the one reported above.
+
+## 6. A probe inside the server
+
+The probe that section 5 priced at "what a forked sequence would cost" now exists, as
+a prototype: a third control action next to `reasoning_end`, on a local branch of the
+llama.cpp fork that serves Bonsai. It is not published.
+
+```
+POST /v1/chat/completions/control
+{"id": "<completion id>", "action": "probe",
+ "suffix": "\n</think>\n\n**Final Answer**\n\n\\boxed", "n_predict": 12, "stop": "}"}
+
+{"success": true,
+ "probe": {"content": "{18", "logprob": -0.28, "tokens": [...], "timings": {...}}}
+```
+
+Between two generation steps, on the thread that owns the context, it saves the
+slot's recurrent state, decodes the suffix and a few greedy tokens on the slot's own
+sequence, reading their real probabilities, then restores the state and removes the
+probe's tokens. It needs no second sequence and no extra GPU memory, and it rereads
+nothing.
+
+Measured on Bonsai 2 with `tools/probe_live.py`, generating greedily:
+
+- **Invisible.** Each problem was generated with and without probes, and the two texts
+  are identical byte for byte, five problems out of five, including 16,526 characters
+  of reasoning probed 54 times. Speculative decoding was on throughout: a rejected
+  draft leaves a pending rollback in the recurrent state, and saving the state
+  honours it.
+- **Cheap, and flat.** Over 70 probes on four problems, none failed: 181 ms median on
+  the server (saving the state 44 ms, decoding 113 ms, restoring 25 ms, for 150 MiB of
+  recurrent state), 213 ms as the client sees it. The cost grows by 0.6 ms per 1,000
+  characters of reasoning, where a probe sent as a separate request grew by 310 ms.
+  Each probe pauses the generation for about 0.2 seconds.
+
+Priced at that (`compare_governors.py --probe-cost 0.2,0.0006`, operating point
+chosen for time saved in total), self-probing on the doubling schedule with a cap
+beats the fixed budget on every measure at the same accuracy:
+
+| governor | accuracy | reasoning cut | time saved per request | time saved in total |
+|---|---|---|---|---|
+| fixed budget | 90.3% | 12% | 12% | 57% |
+| self-probe, doubling + cap | 90.3% | 26% | 20% | 61% |
+| difference, 95% interval | −1.1 to +1.1 | +12 to +15 | +6 to +10 | +2 to +6 |
+
+What remains is the cut itself, which is still simulated: a probe's boxed answer
+stands in for the reply the model writes after a real `reasoning_end`. The next step
+is the governor live in flyball, probing on the doubling schedule, cutting with
+`reasoning_end` when the model is confident, with a cap behind, measured end to end
+against `--reasoning-budget`. The probe can also get cheaper: saving and restoring
+the state goes through host memory, and a copy kept on the GPU would remove most of
+those 70 ms.
