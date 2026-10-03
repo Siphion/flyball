@@ -136,3 +136,12 @@ def test_a_missing_reference_never_makes_an_answer_right() -> None:
 
     assert reference_of({"answer_type": "code", "tests": []}) is None
     assert answer_in("```python\nx = 1\n```", "latex") is None
+
+
+def test_the_policy_picks_the_level_measured_cheapest() -> None:
+    from gate_a_eval import relative_policy
+
+    p = np.array([[0.2, 0.9, 0.9], [0.9, 0.9, 0.9]])
+    assert relative_policy(p, ref=2, delta=0.05).tolist() == [1, 0]  # the ladder's order
+    cost = np.array([9.0, 12.0, 8.0])  # `low` slower than `medium`, as on Bonsai 2
+    assert relative_policy(p, ref=2, delta=0.05, cost=cost).tolist() == [2, 2]

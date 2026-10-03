@@ -209,3 +209,12 @@ def test_stats_report_what_gate_a_did(tmp_path, capsys) -> None:
     run(tmp_path, "active")
     assert report(tmp_path) == 0
     assert "Gate A (learned): 1 requests" in capsys.readouterr().out
+
+
+def test_the_cheapest_level_is_the_one_measured_cheapest_not_the_lowest() -> None:
+    # On Bonsai 2, `low` runs longer than `medium`: equally likely to be right, the
+    # cheaper one by measured time wins, whatever the ladder's order.
+    m = model(biases=(-2.0, 3.2, 3.2))
+    assert m.choose(m.predict([0.0] * WIDTH)) == "low"
+    m.costs = {"none": 9.0, "low": 12.0, "medium": 8.0}
+    assert m.choose(m.predict([0.0] * WIDTH)) == "medium"

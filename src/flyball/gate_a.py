@@ -2,9 +2,10 @@
 
 Before the call, from the request alone, a System 1 estimates for each level of the
 model's reasoning ladder the probability that the model answers correctly at that
-level. The cheapest level whose estimate is within `delta` of the reference level's
-is chosen: on Bonsai 2 that means stepping down from `medium` when thinking less
-is not expected to cost accuracy (docs/gate-b-research.md, section 12).
+level. Among the levels whose estimate is within `delta` of the reference level's,
+the one that has taken least time on average is chosen. Cost is measured, not read
+from the ladder: on Bonsai 2 `low` runs longer than `medium`, and with thinking
+off the working moves into the reply (docs/gate-b-research.md, section 12).
 
 Every piece is swappable:
 
@@ -97,12 +98,15 @@ def extractor(spec: str) -> Extractor:
 @dataclass
 class GateAModel:
     profile: str
-    levels: list[str]  # the ladder it chooses from, cheapest first
+    levels: list[str]  # the ladder it chooses from
     reference_level: str  # the level it steps down from
     features: str  # an extractor spec
     heads: dict[str, LogisticHead]
     platt: dict[str, Platt]
     delta: float  # estimated accuracy that may be given up for a cheaper level
+    # Mean seconds of each level on the training data; without them, the ladder's
+    # order stands for the cost order.
+    costs: dict[str, float] = field(default_factory=dict)
     max_chars: int = REQUEST_TEXT_CHARS
     metrics: dict = field(default_factory=dict)
 
@@ -111,7 +115,12 @@ class GateAModel:
 
     def choose(self, p: dict[str, float]) -> str:
         floor = p[self.reference_level] - self.delta
-        return next((level for level in self.levels if p[level] >= floor), self.reference_level)
+        close = [level for level in self.levels if p[level] >= floor]
+        if not close:
+            return self.reference_level
+        if self.costs:
+            return min(close, key=lambda level: self.costs.get(level, float("inf")))
+        return close[0]
 
     def as_dict(self) -> dict:
         return {
@@ -124,6 +133,7 @@ class GateAModel:
             "heads": {level: head.as_dict() for level, head in self.heads.items()},
             "platt": {level: platt.as_dict() for level, platt in self.platt.items()},
             "policy": {"rule": "relative", "delta": self.delta},
+            "costs": self.costs,
             "metrics": self.metrics,
         }
 
@@ -147,6 +157,7 @@ class GateAModel:
             heads={level: LogisticHead.from_dict(h) for level, h in data["heads"].items()},
             platt={level: Platt.from_dict(p) for level, p in data["platt"].items()},
             delta=float(data["policy"]["delta"]),
+            costs={level: float(v) for level, v in (data.get("costs") or {}).items()},
             max_chars=int(data.get("max_chars", REQUEST_TEXT_CHARS)),
             metrics=data.get("metrics", {}),
         )

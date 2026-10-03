@@ -58,11 +58,15 @@ DELTAS = (0.0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5)
 # -- policies -------------------------------------------------------------------
 
 
-def relative_policy(p: np.ndarray, ref: int, delta: float) -> np.ndarray:
-    """Per request, the cheapest level whose predicted chance is within `delta` of
-    the reference level's. `p` is (requests, levels), cheapest level first."""
+def relative_policy(p: np.ndarray, ref: int, delta: float, cost: np.ndarray | None = None) -> np.ndarray:
+    """Per request, among the levels whose predicted chance is within `delta` of the
+    reference level's, the one expected to take least time: `cost`, the mean seconds
+    of each level on the training data. A lower level is not always cheaper (on
+    Bonsai 2, `low` runs longer than `medium`). Without costs, the ladder's order."""
     ok = p >= (p[:, ref:ref + 1] - delta)
-    return np.where(ok.any(axis=1), ok.argmax(axis=1), ref)
+    order = np.argsort(cost, kind="stable") if cost is not None else np.arange(p.shape[1])
+    first = ok[:, order].argmax(axis=1)
+    return np.where(ok.any(axis=1), order[first], ref)
 
 
 def outcome(P: np.ndarray, T: np.ndarray, choice: np.ndarray) -> tuple[float, float]:
@@ -76,7 +80,7 @@ def choose_delta(p: np.ndarray, P: np.ndarray, T: np.ndarray, ref: int, toleranc
     ref_acc, ref_time = float(P[:, ref].mean()), float(T[:, ref].sum())
     best_delta, best_saving = 0.0, -np.inf
     for delta in DELTAS:
-        acc, total = outcome(P, T, relative_policy(p, ref, delta))
+        acc, total = outcome(P, T, relative_policy(p, ref, delta, T.mean(axis=0)))
         saving = 1 - total / ref_time
         if acc >= ref_acc - tolerance and saving > best_saving:
             best_delta, best_saving = delta, saving
@@ -157,12 +161,14 @@ def knn_outer(x, P, folds, ref: int, T, tolerance: float, k: int) -> tuple[np.nd
     return pred, deltas
 
 
-def apply_deltas(pred: np.ndarray, folds: np.ndarray, deltas: list, ref: int) -> np.ndarray:
+def apply_deltas(pred: np.ndarray, folds: np.ndarray, deltas: list, ref: int, T: np.ndarray) -> np.ndarray:
+    """Each held-out fold decided with its own delta, and with the levels' costs
+    measured on the other folds."""
     choice = np.zeros(len(pred), dtype=int)
     present = [f for f in range(FOLDS) if (folds == f).any()]
     for f, delta in zip(present, deltas):
         rows = folds == f
-        choice[rows] = relative_policy(pred[rows], ref, delta)
+        choice[rows] = relative_policy(pred[rows], ref, delta, T[~rows].mean(axis=0))
     return choice
 
 
@@ -286,9 +292,9 @@ def main() -> int:
         x = data["features"][[index[n] for n in names]].astype(np.float64)
         latency = float(np.median(data["latency"])) if "latency" in data else 0.0
         pred, deltas, l2s = logistic_outer(x, P, folds, ref, T, args.tolerance)
-        policies["logistic " + name] = (apply_deltas(pred, folds, deltas, ref), latency)
+        policies["logistic " + name] = (apply_deltas(pred, folds, deltas, ref, T), latency)
         kpred, kdeltas = knn_outer(x, P, folds, ref, T, args.tolerance, args.knn)
-        policies["knn " + name] = (apply_deltas(kpred, folds, kdeltas, ref), latency)
+        policies["knn " + name] = (apply_deltas(kpred, folds, kdeltas, ref, T), latency)
         fitted[name] = (x, pred, deltas, l2s, spec, latency)
         print("  {}: {} features, decision {:.0f} ms; delta per fold {}".format(
             name, x.shape[1], latency * 1000, deltas))
@@ -311,6 +317,7 @@ def main() -> int:
             heads[level] = fit_head(x, y, l2=l2)
         model = GateAModel(profile=args.profile, levels=levels, reference_level=args.reference, features=spec,
                            heads=heads, platt=platts, delta=float(np.median(deltas)),
+                           costs={level: float(T[:, j].mean()) for j, level in enumerate(levels)},
                            metrics={"cross_validated": numbers.get("logistic " + name, {}),
                                     "problems": len(names), "decision_seconds": latency})
         model.save(args.artifact_out)

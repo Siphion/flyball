@@ -13,7 +13,7 @@ its text, and reports per benchmark and overall:
 - the oracle on the same sample: for each problem, the fastest run that got it
   right. Optimistic twice over: it knows the answer, and with one noisy sample per
   cell it also picks lucky draws;
-- the oracle on split samples: the cheapest level that was right on one repeat,
+- the oracle on split samples: the fastest level that was right on one repeat,
   judged on the other. What a perfect predictor of "this level is enough" could
   at best achieve, with the luck of the draw taken out;
 - the same-level null: the same-sample oracle over two repeats of one level. Its
@@ -136,13 +136,6 @@ def same_sample_oracle(c: np.ndarray, t: np.ndarray, fallback: np.ndarray) -> np
     return np.where(c.max(axis=1) > 0, choice, fallback)
 
 
-def cheapest_right(c: np.ndarray, fallback: np.ndarray) -> np.ndarray:
-    """Per problem, the first level of the ladder (cheapest first) that was right."""
-    right = c > 0
-    first = right.argmax(axis=1)
-    return np.where(right.any(axis=1), first, fallback)
-
-
 def pick(values: np.ndarray, choice: np.ndarray) -> np.ndarray:
     return values[np.arange(len(choice)), choice]
 
@@ -167,7 +160,11 @@ def ceiling(table: Table, sets: np.ndarray, tolerance: float, null_level: int) -
     if len(table.repeats) >= 2:
         split_c, split_t, split_base_t, split_base_c = [], [], [], []
         for a, b in ((0, 1), (1, 0)):
-            choice = cheapest_right(table.c[:, :, a], base)
+            # Chosen on one repeat, judged on the other. By time, not by the ladder's
+            # order: a lower level is not always cheaper (on Bonsai 2, `low` runs
+            # longer than `medium`, and with thinking off the working moves into the
+            # reply).
+            choice = same_sample_oracle(table.c[:, :, a], table.t[:, :, a], base)
             split_c.append(pick(table.c[:, :, b], choice))
             split_t.append(pick(table.t[:, :, b], choice))
             split_base_c.append(base_c[b])
