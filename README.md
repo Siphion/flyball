@@ -176,8 +176,9 @@ the way, is in **[docs/gate-b-research.md](docs/gate-b-research.md)**.
 
 ## Quick start
 
-**Requirements:** Python 3.10 or newer, and an OpenAI-compatible
-[llama.cpp](https://github.com/ggml-org/llama.cpp) server. flyball runs in front of it and
+**Requirements:** Python 3.10 or newer, and an OpenAI-compatible server.
+[llama.cpp](https://github.com/ggml-org/llama.cpp) gets everything; other servers (vLLM,
+SGLang, Ollama, LM Studio, mlx-lm) get Gate A, which needs no mid-stream control. flyball
 needs nothing else in `off` and `shadow` mode; the governor also needs the server's
 `probe` control action.
 
@@ -225,10 +226,15 @@ flags. See [.env.example](.env.example).
 | `FLYBALL_MODE` | `off` | `off`, `shadow` or `active` |
 | `FLYBALL_DATA_DIR` | `./data` | where the ledger is written |
 | `FLYBALL_AB_SHARE` | `0.5` | share of conversations that get the decisions; the rest are the control arm |
+| `FLYBALL_SERVER` | `auto` | `auto`, `llama.cpp`, or `openai` for any other OpenAI-compatible server |
+| `FLYBALL_PROFILE`, `FLYBALL_PROFILES` | | force a model profile; load extra or changed ones from JSON |
+| `FLYBALL_DEFAULT_LEVEL` | | the reasoning level of requests that name none, if the server sets its own |
+| `FLYBALL_GATE_A` | `off` | `on` lets a learned System 1 pick each request's reasoning level |
+| `FLYBALL_GATE_A_ARTIFACT` | | the Gate A model; empty means the one in the model's profile |
 | `FLYBALL_GOVERNOR` | `off` | `on` enables the governor in active mode |
-| `FLYBALL_GOVERNOR_CONFIDENCE` | `0.8` | cut once the model is this confident |
-| `FLYBALL_GOVERNOR_CAP` | `3200` | cut here in any case, in characters of reasoning |
-| `FLYBALL_GOVERNOR_ANCHOR` | `on` | close the reasoning with a sentence that commits to the answer |
+| `FLYBALL_GOVERNOR_*` | profile | override the profile's operating point: `CONFIDENCE`, `CAP`, `FIRST_PROBE`, `GROWTH`, `ANCHOR` |
+
+The full list, with the Gate A settings, is in [docs/modes.md](docs/modes.md#settings).
 
 ## Design rules
 
@@ -255,7 +261,10 @@ Every number above comes from scripts in [`tools/`](tools), run against a live s
 | build problem sets | `build_gsm8k_cases.py`, `build_math_cases.py`, `build_mmlu_pro_cases.py`, `build_mbpp_cases.py` |
 | record uncut reasoning traces | `measure_reasoning_cut.py --cuts 0 --traces ...` |
 | label checkpoints with the teacher | `probe_traces.py` (`--protocol trial`, `free` or `code`) |
-| compare governors offline | `compare_governors.py`, `train_gate_b.py` |
+| compare governors offline, choose a probe schedule | `compare_governors.py`, `train_gate_b.py` |
+| run problems at every reasoning level, and the ceiling of choosing per problem | `effort_sweep.py`, `effort_ceiling.py` |
+| train and evaluate a System 1 for Gate A | `embed_texts.py`, `gate_a_eval.py` |
+| read the model's hidden states at labelled checkpoints | `extract_hidden.py`, `system1_representation.py --features` |
 | measure the probe live | `probe_live.py` |
 | run the governor live against a budget | `govern_live.py` |
 | run generated code, isolated | `sandbox.py` (Docker, no network) |
@@ -267,10 +276,12 @@ MBPP problems from MBPP's training split, so MBPP+ stays clean.
 
 - [x] Transparent proxy, shadow ledger, capability probe
 - [x] The governor: self-probing, calibrated cut, cap, anchor; live on maths and multiple choice
-- [ ] Results at the default reasoning effort
-- [ ] Gate A with a learned backend: choosing, before the call, how much to think
+- [x] Not tied to one stack: server adapters, model profiles with per-level operating points, swappable System 1s
+- [ ] Results at the default reasoning effort, with a probe schedule chosen there
+- [ ] Gate A with a learned backend: choosing, before the call, how much to think (code done, measurements pending)
 - [ ] A probe for code that needs its reasoning, and for open-ended answers
-- [ ] Reading the model's hidden state instead of asking it: no probe pauses, a signal at every token
+- [ ] Reading the model's hidden state instead of asking it: no probe pauses, a signal at every token (offline tools done)
+- [ ] Mid-stream control on other servers: abort and continue with the reasoning as a prefix
 - [ ] Other local models, with calibrations shared per model
 - [ ] The probe action proposed to llama.cpp, so the governor works on a stock server
 - [ ] The standard benchmarks in full: MATH-500, GSM8K, AIME, GPQA Diamond, LiveCodeBench, HumanEval+ and MBPP+
