@@ -125,3 +125,160 @@ The oracle's 98.4% is not evidence that cutting improves answers: it gets up to 
 attempts per trace and keeps the first correct one, so some of those are lucky guesses.
 
 Next: the same pipeline on hard problems with checkable answers.
+
+## 5. Second iteration: hard problems, and the model's own confidence
+
+### Data
+
+Hard problems come from MATH, levels 3 to 5, keeping only those with an integer
+answer so that grading stays a comparison of numbers
+(`tools/build_math_cases.py`). They are drawn from the training split of OpenAI's
+PRM800K, which repartitions MATH so that its test split is exactly MATH-500: nothing
+here overlaps the public benchmark that has to run before any release. The source
+file is pinned by its SHA-256.
+
+300 problems were sampled evenly across levels; the trace run hit a time limit at
+233 of them (78, 78 and 77 per level), which was left as it was. Traces are uncut,
+`reasoning_effort: xhigh`, capped at 8,192 tokens:
+
+| level | traces | answered correctly | median reasoning |
+|---|---|---|---|
+| 3 | 78 | 99% | 488 chars |
+| 4 | 78 | 95% | 1,074 chars |
+| 5 | 77 | 75% | 3,746 chars |
+
+This is the regime GSM8K lacked: the 90th percentile of reasoning is 17,765
+characters, and 24 traces never answered at all, running into the token cap.
+The 300 GSM8K traces of section 4 are reused, relabelled with the new teacher.
+
+### A cheaper and stricter teacher
+
+The teacher now closes the reasoning, starts the reply for the model with
+`**Final Answer**` and a box, and lets it write only the content of the box
+(`probe_traces.py --protocol trial`). The label is whether that answer is right, and
+the model's probability for its own answer is recorded with it.
+
+It is stricter than letting the model write a whole reply. On the 685 GSM8K
+checkpoints labelled both ways, the two agree 78% of the time, and in 130 cases the
+free reply was right where the boxed answer was not: the model was still working the
+problem out in its reply. Cutting there looks safe but saves less time than it seems,
+because the reasoning moves into the answer. The boxed label asks the question a
+governor needs answered: is the answer already settled?
+
+### Three measurement bugs, each of which reversed the verdict
+
+All three were found before any conclusion was written down, and each one, left in,
+would have produced a confident and wrong result.
+
+1. **A token boundary ate the minus sign.** The prompt ended in `\boxed{`, and Qwen's
+   vocabulary merges `{-` into one token: with the brace already in the prompt, the
+   model could hardly write a minus sign, and every negative answer came out positive
+   with low confidence (−3 became `3`, at p≈0.35; fixed, `−3` at p≈0.99). Seventeen
+   of the 300 MATH problems have negative answers. The prefill now stops before the
+   brace.
+2. **Two graders.** "Never cut" was graded by reading the last number of the model's
+   free reply, every cut by the boxed answer. Eighteen right GSM8K replies were read
+   as wrong ("He earns **$202** during the 8-hour shift" reads as 8), which made never
+   cutting look worse than it is. "Never cut" is now graded the way every cut is, by a
+   probe at the very end of the reasoning (`probe_traces.py --final`).
+3. **Speculative decoding hides probabilities.** With multi-token prediction on, the
+   server returns a real probability only for the first token it generates; tokens
+   accepted from the draft come back with log-probability 0, certain. The first
+   "confidence" was therefore the probability of the first digit, and after fix 1 the
+   probability of the brace, always 1, which made self-probing look worthless. The box
+   is now decoded one token per request, and every probability is real.
+
+In the first run, self-probing looked like it cut 42% of reasoning against a fixed
+budget's 11%. With the first two bugs fixed and the third still in, it never
+qualified at all. Neither was true.
+
+### Results
+
+Five-fold cross-validation over the 454 traces that have at least one checkpoint
+(`tools/compare_governors.py --learned`). Each governor's operating point is chosen
+on four folds, as the most reasoning cut within one point of never cutting, and
+read on the fifth; the learned governor's scores are cross-fitted the same way.
+Never cutting is right 91.2% of the time.
+
+| governor | accuracy | reasoning cut | time saved per request | time saved in total | probes per request |
+|---|---|---|---|---|---|
+| fixed budget (2,400–4,800 chars) | 90.3% | 12% | 12% | 57% | – |
+| learned, text only, on the CPU | 90.7% | 7% | 7% | 26% | – |
+| self-probe at every checkpoint | 91.9% | **37%** | 0% | 31% | 3.5 |
+| self-probe, doubling schedule | 91.6% | 27% | 12% | 42% | 1.5 |
+| self-probe, doubling schedule + cap | 91.0% | 28% | 14% | 52% | 1.5 |
+
+The doubling schedule probes once the reasoning passes 300 characters and again each
+time it doubles; the cap is a fixed budget behind it, for traces that never settle.
+Time saved is net of the probes' measured cost. Against the fixed budget, with 95%
+bootstrap intervals over problems:
+
+| governor | accuracy | reasoning cut | per request | in total |
+|---|---|---|---|---|
+| learned, text only | −1.3 to +2.2 | **−7 to −3** | −7 to −3 | −38 to −23 |
+| self-probe, every checkpoint | −0.7 to +3.7 | **+22 to +27** | −15 to −9 | −35 to −16 |
+| self-probe, doubling + cap | −1.3 to +2.4 | **+14 to +18** | 0 to +4 | −8 to −1 |
+
+The model's confidence in its forced answer is well calibrated, over all 3,130
+checkpoints:
+
+| confidence | checkpoints | answer right |
+|---|---|---|
+| below 0.30 | 865 | 14% |
+| 0.30–0.70 | 392 | 55% |
+| 0.70–0.90 | 370 | 80% |
+| 0.90–0.97 | 374 | 91% |
+| 0.97 and above | 1,129 | 97% |
+
+### What it means
+
+1. **The text-only learned governor fails.** It learns something (AUC 0.71, ECE 0.04
+   on held-out problems), but at equal accuracy it cuts less reasoning than a fixed
+   budget. The words of the reasoning do not say when it is done, not well enough.
+2. **The model knows when it is done.** Asked for its answer, its confidence is
+   calibrated, and as a governor it cuts two to three times as much reasoning as the
+   best fixed budget at the same accuracy. The bar set for Gate B is passed, by
+   self-probing rather than by the classifier.
+3. **In wall-clock time it is a draw, because probes are expensive here.** A probe
+   takes 0.7 to 2 seconds, and almost all of it is the server reprocessing context:
+   decoding the four-token answer takes about 60 ms. Bonsai 2 is built on Qwen3.5, a
+   hybrid architecture: three layers in four are recurrent, one in four is full
+   attention. llama.cpp can only resume a recurrent state from saved checkpoints, so
+   a request that diverges from the cached sequence rereads 600 to 2,100 tokens even
+   when it adds a hundred. Probing every checkpoint costs as much time as it saves.
+4. **A cheap probe would turn the draw into a win.** Priced at what a forked
+   sequence would cost, the suffix and the answer with nothing reprocessed, the
+   doubling schedule with a cap beats the fixed budget on both time measures:
+
+   | probe cost | per request | in total | accuracy |
+   |---|---|---|---|
+   | 0.1 s | +8 to +11 | +2 to +7 | −0.9 to +1.1 |
+   | 0.3 s | +5 to +8 | +1 to +5 | −0.9 to +1.1 |
+
+   (`compare_governors.py --probe-cost 0.1,0`, operating point chosen for time saved
+   in total.)
+
+### What follows
+
+The System 1 that works is not a classifier reading the reasoning: it is a policy
+that asks the model. What it needs is a mechanism llama.cpp does not have yet, a
+probe on a live completion: a control action, next to `reasoning_end`, that forks
+the running sequence, appends a suffix, decodes a few tokens with their real
+probabilities, returns them and drops the fork. That is the next milestone, and the
+natural contribution upstream. Live validation comes after it, because everything
+here is simulated: a real cut lets the model write a free reply, not a boxed answer.
+
+### Caveats
+
+- Simulated, not live. The probe cost was measured with nothing else running; under
+  a live generation it depends on how the server schedules it.
+- One model, one reasoning effort, two datasets, 454 traces.
+- Time saved is estimated from characters skipped at a constant generation rate.
+- Traces with under 200 characters of reasoning have no checkpoint and are left out:
+  nothing could be cut there, but they would lower every per-request mean.
+- Runaway traces count as wrong when never cut, and a cap can score them right,
+  which is part of why fixed budgets do so well on total time.
+- A single train, calibration and test split was not enough to choose operating
+  points: on the 84 calibration problems the fixed budget chose 800 characters, which
+  then lost nine points of accuracy on the test split. Cross-validation is the
+  reliable read, and the one reported above.

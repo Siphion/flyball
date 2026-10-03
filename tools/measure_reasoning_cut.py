@@ -197,12 +197,36 @@ def last_number(text: str) -> str | None:
     return value
 
 
+BOX = r"\boxed{"
+
+
+def final_answer(text: str) -> str | None:
+    r"""The number a reply commits to: the content of the last \boxed{...} when there
+    is one, otherwise the last number. Competition maths answers end in a box, and
+    whatever follows the box (a check, a remark) must not be read as the answer."""
+    start = text.rfind(BOX)
+    if start >= 0:
+        depth = 0
+        opening = start + len(BOX) - 1
+        for index in range(opening, len(text)):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    inside = last_number(text[opening + 1:index])
+                    if inside is not None:
+                        return inside
+                    break
+    return last_number(text)
+
+
 def grade(case: dict, result: dict) -> bool | None:
     """None means this case has no machine-checkable expectation."""
     if case.get("expect_tool"):
         return case["expect_tool"] in result["tool_names"]
     if case.get("reference_answer") is not None:
-        return last_number(result["content"]) == last_number(case["reference_answer"])
+        return final_answer(result["content"]) == last_number(case["reference_answer"])
     if case.get("expect"):
         return bool(re.search(case["expect"], result["content"], re.I))
     return None
@@ -267,7 +291,14 @@ def main() -> int:
         type=Path,
         help="also write every reasoning and answer in full, one JSON object per run",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="append to existing output, skipping runs already in the traces file",
+    )
     args = parser.parse_args()
+    if args.resume and not args.traces:
+        parser.error("--resume needs --traces, which records what has been done")
 
     cases = json.loads(args.cases.read_text(encoding="utf-8")) if args.cases else DEFAULT_CASES
     if args.only_class:
@@ -286,10 +317,23 @@ def main() -> int:
     done = 0
     # Rows are flushed as they are produced: a sweep can run for hours, and an
     # interrupted run must keep everything it measured so far.
+    # A resumed run skips what the traces file already holds. Runs that failed were
+    # never written there, so they are attempted again.
+    finished = set()
+    if args.resume and args.traces.exists():
+        for line in args.traces.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                finished.add((row["case"], row["cut"], row["repeat"]))
+        print("resuming: {} runs already done".format(len(finished)))
+    mode = "a" if args.resume else "w"
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    handle = args.out.open("w", newline="", encoding="utf-8")
+    fresh_csv = mode == "w" or not args.out.exists()
+    handle = args.out.open(mode, newline="", encoding="utf-8")
     writer = csv.DictWriter(handle, fieldnames=[f.name for f in fields(Run)])
-    writer.writeheader()
+    if fresh_csv:
+        writer.writeheader()
 
     def record(run: Run) -> None:
         results.append(run)
@@ -301,13 +345,15 @@ def main() -> int:
     traces = None
     if args.traces:
         args.traces.parent.mkdir(parents=True, exist_ok=True)
-        traces = args.traces.open("w", encoding="utf-8")
+        traces = args.traces.open(mode, encoding="utf-8")
 
     # Interleaved: every arm of every case within one repeat, then repeat again.
     for repeat in range(args.runs):
         for case in cases:
             for cut in cuts:
                 done += 1
+                if (case["name"], cut, repeat) in finished:
+                    continue
                 label = "[{:>4}/{}] {:<22} cut={:<5}".format(
                     done, total, case["name"], cut or "none")
                 try:
