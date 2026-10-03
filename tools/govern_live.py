@@ -46,10 +46,10 @@ import sys
 
 import numpy as np
 
-from measure_reasoning_cut import final_answer, last_number
+from measure_reasoning_cut import answer_in, last_number, reference_of
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from flyball.governor import anchor_message  # noqa: E402
+from flyball.governor import anchor_message, answer_value  # noqa: E402
 
 PROBE_SUFFIX = "\n</think>\n\n**Final Answer**\n\n\\boxed"
 ARMS = ("never", "budget", "governor", "anchored")
@@ -135,7 +135,7 @@ class Server:
                         probe = {"at": chars, "ms": round((time.perf_counter() - t0) * 1000, 1),
                                  "ok": bool(reply.get("success"))}
                         if probe["ok"]:
-                            probe["answer"] = last_number(reply["probe"]["content"])
+                            probe["answer"] = answer_value(reply["probe"]["content"])
                             probe["p"] = round(math.exp(reply["probe"]["logprob"]), 4)
                             if probe["p"] >= confidence:
                                 reason = "confident"
@@ -174,8 +174,9 @@ def summarise(runs_path: Path, cases_path: Path, n_boot: int = 2000) -> None:
             continue
         if "content" in run:
             # graded again from the text, with the grader as it is now
-            run["answer"] = final_answer(run["content"])
-            run["correct"] = run["answer"] == last_number(cases[run["case"]]["reference_answer"])
+            case = cases[run["case"]]
+            run["answer"] = answer_in(run["content"], case.get("answer_type", "number"))
+            run["correct"] = run["answer"] == reference_of(case)
         by.setdefault(run["case"], {})[run["arm"]] = run
     arms = [arm for arm in ARMS if any(arm in a for a in by.values())]
     complete = [name for name, a in by.items() if all(arm in a for arm in arms)]
@@ -236,7 +237,7 @@ def summarise(runs_path: Path, cases_path: Path, n_boot: int = 2000) -> None:
                 ", ".join("{} {}".format(k, v) for k, v in sorted(reasons.items()))))
 
     table(complete, "All problems")
-    for prefix in ("math", "gsm8k"):
+    for prefix in ("math", "gsm8k", "mmlu-pro"):
         table([n for n in complete if n.startswith(prefix)], prefix)
 
 
@@ -283,7 +284,7 @@ def main() -> int:
     count = 0
     with args.out.open("a", encoding="utf-8") as handle:
         for index, case in enumerate(cases):
-            reference = last_number(case["reference_answer"])
+            reference = reference_of(case)
             # The order of the arms rotates from one problem to the next.
             shift = index % len(arms)
             for arm in arms[shift:] + arms[:shift]:
@@ -294,7 +295,7 @@ def main() -> int:
                        "confidence": args.confidence, "cap": args.cap}
                 try:
                     result = server.run(case["prompt"], arm, args.budget, args.confidence, args.cap)
-                    result["answer"] = final_answer(result["content"])
+                    result["answer"] = answer_in(result["content"], case.get("answer_type", "number"))
                     result["correct"] = result["answer"] == reference
                     row.update(result)
                 except Exception as exc:  # noqa: BLE001 - a failed run is recorded and retried later

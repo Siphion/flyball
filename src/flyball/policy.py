@@ -127,8 +127,8 @@ def plan_governor(
         return GovernorPlan(False, False, "tools or images: not measured")
     if state.code_request_markers:
         return GovernorPlan(False, False, "a code request: the probe asks for a number")
-    if not (state.math_markers or state.numeric_answer_markers):
-        return GovernorPlan(False, False, "not a question with a numeric answer")
+    if not (state.math_markers or state.numeric_answer_markers or state.choice_options >= 3):
+        return GovernorPlan(False, False, "not a question with a numeric or multiple-choice answer")
     if not probe_supported:
         return GovernorPlan(False, False, "the upstream has no probe action")
 

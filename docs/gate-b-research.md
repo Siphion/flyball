@@ -439,3 +439,35 @@ after mentioning 100.
 
 The anchor is on by default (`FLYBALL_GOVERNOR_ANCHOR`); a server whose
 `reasoning_end` takes no message simply ignores it.
+
+## 9. Beyond numbers: multiple choice
+
+A probe asks for a final answer in a box, and an option letter fits in a box as well
+as a number does. The governor now accepts a letter as an answer (`{B`, `{\text{B`,
+`{(B)`), and governs questions that list at least three options.
+
+Tested live on 75 MMLU-Pro questions (`tools/build_mmlu_pro_cases.py`, test split,
+sampled at random with a fixed seed across its fourteen subjects, physics, law,
+economics and psychology among them; MMLU-Pro is not one of the benchmarks kept for
+the public results), with the operating point unchanged:
+
+| arm | accuracy | mean time |
+|---|---|---|
+| never cut | 60.0% | 53.7 s |
+| fixed budget | 70.7% | 10.9 s |
+| anchored governor | 68.0% | **6.5 s** |
+
+Anchored governor minus fixed budget, 95% intervals: accuracy −8.0 to +2.7 points,
+time saved in total +14 to +59%. The governor is faster than the budget by a margin
+the interval separates from zero, at an accuracy the interval cannot tell apart.
+
+Two things differ from maths. With ten options the model is confident less often:
+of 75 questions, 49 were cut on confidence and 23 at the cap. And never cutting is
+far worse here than anywhere before: at the highest reasoning effort the model
+reasons for 16,000 characters on average, often until the token limit, and gives no
+answer at all. Any cut rescues those, which is why both cutting arms beat never
+cutting by ten points.
+
+Caveat for everyday use: every measurement so far runs at the highest reasoning
+effort, where the model overthinks the most. A server's default is usually lower,
+and so will the gains be; that has to be measured on its own.

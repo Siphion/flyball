@@ -45,6 +45,8 @@ _NUMERIC_ANSWER = re.compile(
     r"perimeter|volume|average|mean|cost|price)\b|\$[^$\n]+\$|\\frac|\\boxed|\\sqrt",
     re.I,
 )
+# The options of a multiple-choice question, one per line: "A. ...", "(B) ...".
+_CHOICE = re.compile(r"^\s*\(?[A-J][.)]\s+\S", re.M)
 _REASONING = re.compile(
     r"\bwhy\b|\bexplain\b|\breason\b|\bdesign\b|\btrade.?off|\bdebug|\bfix\b|\bbug\b|"
     r"\banaly[sz]e|\bcompare\b|\bstep by step\b|\bthink\b",
@@ -91,6 +93,7 @@ class RequestState:
     code_request_markers: int
     math_markers: int
     numeric_answer_markers: int
+    choice_options: int
     reasoning_markers: int
     format_markers: int
     client_effort: str
@@ -141,6 +144,7 @@ def build_state(body: dict) -> RequestState:
         code_request_markers=len(_CODE_REQUEST.findall(last_user)) + last_user.count("```") // 2,
         math_markers=len(_MATH.findall(last_user)),
         numeric_answer_markers=len(_NUMERIC_ANSWER.findall(last_user)),
+        choice_options=len(_CHOICE.findall(last_user)),
         reasoning_markers=len(_REASONING.findall(last_user)),
         format_markers=len(_FORMAT.findall(last_user)),
         client_effort=str(body.get("reasoning_effort") or ""),

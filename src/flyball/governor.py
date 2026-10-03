@@ -55,6 +55,20 @@ def answer_number(text: str) -> str | None:
     return value
 
 
+# An option letter as a model boxes it: {B, {\text{B, {(B), {B. ...
+_OPTION = re.compile(r"^\W*(?:\\text\w*\{)?\W*([A-J])\b")
+
+
+def answer_value(text: str) -> str | None:
+    """A probe's answer when it is short enough to trust: a number, or the letter of
+    a multiple-choice option. Anything longer is not an answer the probe can vouch for."""
+    number = answer_number(text)
+    if number is not None:
+        return number
+    found = _OPTION.match(text)
+    return found.group(1) if found else None
+
+
 @dataclass
 class GovernorConfig:
     confidence: float = 0.8
@@ -165,7 +179,7 @@ class Governor:
             self.stopped = "probe refused: " + record["message"]
             return
         probe = reply.get("probe") or {}
-        record["answer"] = answer_number(str(probe.get("content", "")))
+        record["answer"] = answer_value(str(probe.get("content", "")))
         record["p"] = round(math.exp(float(probe.get("logprob", -math.inf))), 4)
         if record["answer"] is not None and record["p"] >= self.config.confidence:
             await self._end("confident", record["answer"])

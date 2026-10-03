@@ -225,6 +225,40 @@ def final_answer(text: str) -> str | None:
     return last_number(text)
 
 
+_OPTION = re.compile(r"^\W*(?:\\text\w*\{)?\W*([A-J])\b")
+
+
+def final_letter(text: str) -> str | None:
+    r"""The option a reply commits to, for multiple choice: the letter in its last
+    \boxed{...}, written plainly or as \text{B}, (B) or B. A reply without a box has
+    not committed to an option."""
+    start = text.rfind(BOX)
+    if start < 0:
+        return None
+    depth = 0
+    opening = start + len(BOX) - 1
+    for index in range(opening, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                found = _OPTION.match(text[opening + 1:index])
+                return found.group(1) if found else None
+    return None
+
+
+def answer_in(text: str, answer_type: str = "number") -> str | None:
+    """The answer a reply commits to, read the way its case expects it."""
+    return final_letter(text) if answer_type == "letter" else final_answer(text)
+
+
+def reference_of(case: dict) -> str | None:
+    if case.get("answer_type") == "letter":
+        return str(case["reference_answer"]).strip().upper()
+    return last_number(case["reference_answer"])
+
+
 def grade(case: dict, result: dict) -> bool | None:
     """None means this case has no machine-checkable expectation."""
     if case.get("expect_tool"):

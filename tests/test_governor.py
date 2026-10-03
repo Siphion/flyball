@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from flyball.config import Settings
-from flyball.governor import Governor, GovernorConfig, answer_number
+from flyball.governor import Governor, GovernorConfig, answer_number, answer_value
 from flyball.ledger import Ledger
 from flyball.policy import plan_governor
 from flyball.proxy import create_app
@@ -140,6 +140,20 @@ def test_without_anchoring_the_cut_carries_no_message() -> None:
     assert "message" not in end
 
 
+def test_option_letters_count_as_answers() -> None:
+    assert answer_value("{F") == "F"
+    assert answer_value(r"{\text{B") == "B"
+    assert answer_value("{(C)") == "C"
+    assert answer_value("{Yes") is None
+    assert answer_value("{42") == "42"
+
+
+def test_a_confident_option_letter_cuts() -> None:
+    control = FakeControl(probes=[("{F", -0.02)])
+    g = drive(governor(control), reasoning(500))
+    assert g.cut["reason"] == "confident" and g.probes[0]["answer"] == "F"
+
+
 def test_answer_numbers_are_read_like_the_research_grader() -> None:
     assert answer_number("{12{,}000") == "12000"
     assert answer_number("{-3") == "-3"
@@ -170,6 +184,13 @@ def test_a_semicolon_in_prose_does_not_make_a_problem_code() -> None:
     assert plan(body=body).govern
 
 
+def test_a_multiple_choice_question_is_governed() -> None:
+    body = {"stream": True, "messages": [{"role": "user", "content": (
+        "Which style of leadership takes account of others' views?\n\n"
+        "A. Task-oriented\nB. Servant\nC. Democratic\nD. Autocratic")}]}
+    assert plan(body=body).govern
+
+
 def test_a_pasted_code_block_is_left_alone() -> None:
     body = {"stream": True, "messages": [{"role": "user", "content": (
         "```python\nx = sum(range(10))\n```\nHow much is x?")}]}
@@ -190,7 +211,7 @@ def test_a_pasted_code_block_is_left_alone() -> None:
         ({"body": {"stream": True, "messages": [{"role": "user", "content": "Write a Python function to sort a list."}]}},
          "code request"),
         ({"body": {"stream": True, "messages": [{"role": "user", "content": "Tell me about Rome."}]}},
-         "numeric answer"),
+         "multiple-choice answer"),
     ],
 )
 def test_everything_else_is_left_alone(change: dict, reason: str) -> None:
