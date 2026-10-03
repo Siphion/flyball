@@ -170,9 +170,11 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--cache", type=Path, default=Path("F:/ai/flyball/benchmarks/raw"))
     parser.add_argument("--seed", type=int, default=7, help="for the order of GPQA's options")
+    parser.add_argument("--token-file", type=Path, help="a Hugging Face token, for gated datasets (else HF_TOKEN)")
     args = parser.parse_args()
 
-    rows = rows_of(args.benchmark, args.cache, os.environ.get("HF_TOKEN", ""))
+    token = args.token_file.read_text(encoding="utf-8").strip() if args.token_file else os.environ.get("HF_TOKEN", "")
+    rows = rows_of(args.benchmark, args.cache, token)
     cases = cases_for(args.benchmark, rows, args.seed)
     left_out = [c["name"] for c in cases if c["name"] in EXCLUDED]
     cases = [c for c in cases if c["name"] not in EXCLUDED]
