@@ -302,3 +302,86 @@ def test_without_the_probe_action_the_proxy_only_forwards(tmp_path) -> None:
     assert len([r for r in seen if r.url.path.endswith("/control")]) == 1  # only the check
     decision = Ledger(tmp_path).decisions.read()[-1]
     assert decision["governor"]["reason"] == "the upstream has no probe action"
+
+
+# --- the schedule: when to probe, per level ---------------------------------------
+
+
+def test_the_default_schedule_is_the_first_versions() -> None:
+    from flyball.governor import probe_points
+
+    assert probe_points(GovernorConfig(), 10_000) == [300, 600, 1200, 2400]
+    assert probe_points(GovernorConfig(first_probe=1200, growth=1.5, cap=None), 4000) == [1200, 1800, 2700]
+    assert probe_points(GovernorConfig(first_probe=None), 10_000) == []
+
+
+def test_without_probes_the_governor_is_a_plain_budget() -> None:
+    control = FakeControl()
+    g = drive(governor(control, first_probe=None, cap=1000), reasoning(1500))
+    assert control.actions() == ["reasoning_end"]
+    assert g.cut["reason"] == "cap" and g.probes == []
+
+
+def test_a_later_first_probe_leaves_short_reasoning_alone() -> None:
+    control = FakeControl(probes=[("{7", -3.0)] * 5)
+    g = drive(governor(control, first_probe=1200, cap=None), reasoning(2000))
+    assert [p["at"] for p in g.probes] == [1200]
+
+
+def test_a_server_without_control_stops_the_governor_quietly() -> None:
+    from flyball.servers import UnsupportedController
+
+    g = drive(Governor(config=GovernorConfig(), control=UnsupportedController()), reasoning(800))
+    assert g.stopped.startswith("probe unsupported") and g.cut is None
+
+
+BONSAI_PROPS = {"model_path": r"F:\models\Ternary-Bonsai-2-27B-PTQ1_0-mtp.gguf", "model_alias": "bonsai2-27b"}
+
+
+def bonsai_upstream(seen: list[httpx.Request]):
+    handler = upstream_with_control(seen)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            seen.append(request)
+            return httpx.Response(200, json=BONSAI_PROPS)
+        return handler(request)
+
+    return handle
+
+
+def run_through_proxy(tmp_path, body: dict, **settings) -> list[httpx.Request]:
+    seen: list[httpx.Request] = []
+    values = dict(upstream="http://upstream.invalid", mode="active", governor=True,
+                  ab_treatment_share=1.0, data_dir=tmp_path)
+    values.update(settings)
+    app = create_app(Settings(**values))
+    with TestClient(app) as client:
+        app.state.client = httpx.AsyncClient(transport=httpx.MockTransport(bonsai_upstream(seen)))
+        with client.stream("POST", "/v1/chat/completions", json=body) as reply:
+            b"".join(reply.iter_bytes())
+    return seen
+
+
+def test_each_level_gets_its_own_operating_point(tmp_path) -> None:
+    run_through_proxy(tmp_path / "low", dict(MATH, reasoning_effort="low"))
+    decision = Ledger(tmp_path / "low").decisions.read()[-1]
+    assert decision["profile"] == "bonsai-2" and decision["level"] == "low"
+    assert not decision["governor"]["govern"] and "no operating point" in decision["governor"]["reason"]
+
+    run_through_proxy(tmp_path / "medium", dict(MATH, reasoning_effort="medium"))
+    assert Ledger(tmp_path / "medium").decisions.read()[-1]["governor"]["govern"]
+
+
+def test_the_default_level_is_the_servers_when_declared(tmp_path) -> None:
+    run_through_proxy(tmp_path, MATH, default_level="low")
+    decision = Ledger(tmp_path).decisions.read()[-1]
+    assert decision["level"] == "low" and not decision["governor"]["govern"]
+
+
+def test_settings_override_the_profiles_point(tmp_path) -> None:
+    seen = run_through_proxy(tmp_path, MATH, governor_first_probe=600, governor_confidence=0.99)
+    outcome = Ledger(tmp_path).outcomes.read()[-1]
+    assert outcome["governor"]["first_probe"] == 600 and outcome["governor"]["confidence"] == 0.99
+    probes = [json.loads(r.content) for r in seen if r.url.path.endswith("/control")]
+    assert probes[0]["id"] == "flyball-capability-check"

@@ -15,6 +15,7 @@ from pathlib import Path
 #   shadow - decisions are computed and logged, but never applied.
 #   active - approved decisions are applied to live traffic.
 MODES = ("off", "shadow", "active")
+SERVERS = ("auto", "llama.cpp", "openai")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -35,6 +36,29 @@ def _env_float(name: str, default: float) -> float:
         return float(raw) if raw else default
     except ValueError:
         return default
+
+
+def _env_opt_float(name: str) -> float | None:
+    raw = _env(name)
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def _env_opt_int(name: str) -> int | None:
+    raw = _env(name)
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        return None
+
+
+def _env_opt_bool(name: str) -> bool | None:
+    raw = _env(name).lower()
+    if not raw:
+        return None
+    return raw in ("1", "on", "true", "yes")
 
 
 # FLYBALL_THRESHOLD_NEEDS_DELIBERATION=0.85 and so on, one variable per question.
@@ -75,22 +99,38 @@ class Settings:
     # are the control arm, logged as "would have applied".
     ab_treatment_share: float = field(default_factory=lambda: _env_float("FLYBALL_AB_SHARE", 0.5))
 
-    # Gate B, the mid-stream governor (docs/gate-b-research.md, sections 5 to 7).
+    # The server and the model. The server's kind is discovered unless given
+    # (auto, llama.cpp, openai); the model's profile is matched on the model id the
+    # server reports (profiles.py), unless one is named here. Profiles can be added
+    # or extended from a JSON file.
+    server: str = field(default_factory=lambda: _env("FLYBALL_SERVER", "auto"))
+    profile: str = field(default_factory=lambda: _env("FLYBALL_PROFILE"))
+    profiles_path: str = field(default_factory=lambda: _env("FLYBALL_PROFILES"))
+    # The reasoning level of a request that names none. A server started with its
+    # own default (llama-server --reasoning-effort medium) does not report it, so
+    # it is declared here; empty means the profile's default, the template's own.
+    default_level: str = field(default_factory=lambda: _env("FLYBALL_DEFAULT_LEVEL"))
+
+    # Gate B, the mid-stream governor (docs/gate-b-research.md, sections 5 to 8).
     # It acts only in active mode, only when switched on here, and only with an
-    # upstream that offers the `probe` control action. The defaults are the
-    # operating point measured live: cut once the model is 0.8 confident in its
-    # answer, and in any case at 3,200 characters of reasoning.
+    # upstream that can probe a live completion. The operating point comes from the
+    # model's profile, per reasoning level: a level without one is not governed.
+    # The variables below override the profile's point when they are set.
     governor: bool = field(
         default_factory=lambda: _env("FLYBALL_GOVERNOR", "off").lower() in ("1", "on", "true", "yes")
     )
-    governor_confidence: float = field(default_factory=lambda: _env_float("FLYBALL_GOVERNOR_CONFIDENCE", 0.8))
-    governor_cap: int = field(default_factory=lambda: _env_int("FLYBALL_GOVERNOR_CAP", 3200))
+    governor_confidence: float | None = field(default_factory=lambda: _env_opt_float("FLYBALL_GOVERNOR_CONFIDENCE"))
+    governor_cap: int | None = field(default_factory=lambda: _env_opt_int("FLYBALL_GOVERNOR_CAP"))
+    governor_first_probe: int | None = field(default_factory=lambda: _env_opt_int("FLYBALL_GOVERNOR_FIRST_PROBE"))
+    governor_growth: float | None = field(default_factory=lambda: _env_opt_float("FLYBALL_GOVERNOR_GROWTH"))
     # Close the reasoning with a sentence that commits to the answer the probe found.
-    # On by default: measured live, it kept accuracy and cut total time by a fifth,
-    # because the reply no longer picks the reasoning back up (section 8).
-    governor_anchor: bool = field(
-        default_factory=lambda: _env("FLYBALL_GOVERNOR_ANCHOR", "on").lower() in ("1", "on", "true", "yes")
-    )
+    # On in every measured profile: live, it kept accuracy and cut total time by a
+    # fifth, because the reply no longer picks the reasoning back up (section 8).
+    governor_anchor: bool | None = field(default_factory=lambda: _env_opt_bool("FLYBALL_GOVERNOR_ANCHOR"))
+
+    # A System One server (Laya's, Jev, ...), for decision backends that use one.
+    systemone_url: str = field(default_factory=lambda: _env("FLYBALL_SYSTEMONE_URL"))
+    systemone_api_key: str = field(default_factory=lambda: _env("FLYBALL_SYSTEMONE_API_KEY"))
 
     # Local models are slow. A short read timeout would abort perfectly healthy
     # generations, so only connect and write are bounded by default.
@@ -101,6 +141,19 @@ class Settings:
         self.upstream = self.upstream.rstrip("/")
         if self.mode not in MODES:
             raise ValueError(f"FLYBALL_MODE must be one of {MODES}, got {self.mode!r}")
+        if self.server not in SERVERS:
+            raise ValueError(f"FLYBALL_SERVER must be one of {SERVERS}, got {self.server!r}")
+
+    def governor_overrides(self) -> dict:
+        """The operating-point fields set in the environment, by GovernorConfig name."""
+        values = {
+            "confidence": self.governor_confidence,
+            "cap": self.governor_cap,
+            "first_probe": self.governor_first_probe,
+            "growth": self.governor_growth,
+            "anchor": self.governor_anchor,
+        }
+        return {name: value for name, value in values.items() if value is not None}
 
     def upstream_url(self, path: str) -> str:
         return f"{self.upstream}/{path.lstrip('/')}"

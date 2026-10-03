@@ -17,7 +17,10 @@ from . import heuristic
 from .config import Settings
 from .ledger import Ledger
 from .policy import GovernorPlan, plan, plan_governor
+from .profiles import LEGACY, ModelProfile, resolve
+from .servers import LlamaCpp, OpenAICompatible, ServerCapabilities
 from .state import STATE_VERSION, build_state
+from .streams import Delta, SSEReader, read_message
 
 
 @dataclass
@@ -37,7 +40,12 @@ class OutcomeTracker:
     unreadable: bool = False
     # Gate B's plan for this request; the proxy starts a governor when it says so.
     governor_plan: GovernorPlan | None = None
-    _buffer: bytes = b""
+    # Who is behind the request, for the governor: the server adapter, the model's
+    # profile and the reasoning level the request runs at.
+    adapter: OpenAICompatible | None = None
+    profile: ModelProfile = LEGACY
+    level: str = ""
+    _reader: SSEReader = field(default_factory=SSEReader)
     _body: list = field(default_factory=list)
 
     def feed(self, chunk: bytes) -> None:
@@ -46,48 +54,30 @@ class OutcomeTracker:
         if not self.streaming:
             self._body.append(chunk)
             return
-        self._buffer += chunk
-        while b"\n" in self._buffer:
-            line, self._buffer = self._buffer.split(b"\n", 1)
-            self._line(line.strip())
+        for delta in self._reader.feed(chunk):
+            self._delta(delta)
+        self.saw_done = self._reader.done
 
-    def _line(self, line: bytes) -> None:
-        if not line.startswith(b"data:"):
-            return
-        payload = line[5:].strip()
-        if payload == b"[DONE]":
-            self.saw_done = True
-            return
-        try:
-            event = json.loads(payload)
-        except ValueError:
-            return
-        for choice in event.get("choices") or []:
-            self._delta(choice.get("delta") or {})
-            if choice.get("finish_reason"):
-                self.finish_reason = choice["finish_reason"]
-
-    def _delta(self, delta: dict) -> None:
-        if delta.get("reasoning_content"):
-            self.reasoning_chars += len(delta["reasoning_content"])
-        if delta.get("content"):
+    def _delta(self, delta: Delta) -> None:
+        if delta.reasoning:
+            self.reasoning_chars += len(delta.reasoning)
+        if delta.content:
             if self.first_content_at is None:
                 self.first_content_at = time.time()
-            self.content_chars += len(delta["content"])
-        if delta.get("tool_calls"):
+            self.content_chars += len(delta.content)
+        if delta.tool_calls:
             if self.first_content_at is None:
                 self.first_content_at = time.time()
-            self.tool_calls += len(delta["tool_calls"])
+            self.tool_calls += delta.tool_calls
+        if delta.finish_reason:
+            self.finish_reason = delta.finish_reason
 
     def finish(self, completed: bool) -> dict:
         if not self.streaming and self._body:
-            try:
-                message = json.loads(b"".join(self._body))["choices"][0]
-                self._delta(message.get("message") or {})
-                self.finish_reason = message.get("finish_reason") or ""
+            message = read_message(b"".join(self._body))
+            if message is not None:
+                self._delta(message)
                 self.saw_done = True
-            except (ValueError, KeyError, IndexError, TypeError):
-                pass
         ended = time.time()
         return {
             "decision_id": self.decision_id,
@@ -107,10 +97,20 @@ class OutcomeTracker:
 
 
 def observe(
-    ledger: Ledger, settings: Settings, raw_body: bytes, probe_supported: bool = False
+    ledger: Ledger,
+    settings: Settings,
+    raw_body: bytes,
+    probe_supported: bool = False,
+    adapter: OpenAICompatible | None = None,
+    caps: ServerCapabilities | None = None,
+    profiles: list[ModelProfile] | None = None,
 ) -> tuple[OutcomeTracker | None, bytes]:
     """Decide on a chat completion request, record the decision, and return a
-    tracker plus the body to send: the original, unless active mode rewrote it."""
+    tracker plus the body to send: the original, unless active mode rewrote it.
+
+    `adapter` and `caps` describe the upstream, as discovered (servers.py); without
+    them the upstream is taken to be llama.cpp, as in flyball's first version.
+    `profiles` are the model profiles to match the request against."""
     try:
         body = json.loads(raw_body)
     except ValueError:
@@ -118,25 +118,30 @@ def observe(
     if not isinstance(body, dict) or not body.get("messages"):
         return None, raw_body
 
+    adapter = adapter if adapter is not None else LlamaCpp()
+    caps = caps if caps is not None else ServerCapabilities()
+    profile = resolve(caps.model_names() + [str(body.get("model") or "")], profiles or [], settings.profile)
+    level = profile.requested_level(body, settings.default_level)
+
     state = build_state(body)
     started = time.time()
     decision = heuristic.decide(state)
     decided_in = time.time() - started
     killed = settings.kill_switch.exists()
-    action = plan(settings, body, state, decision, killed=killed)
+    action = plan(settings, body, state, decision, killed=killed,
+                  render_off=lambda b: adapter.render_level(b, profile.off_level(), profile))
 
     if action.applied:
         # Gate A switched thinking off: there is no reasoning left for Gate B.
         governor_plan = GovernorPlan(False, False, "thinking was switched off by Gate A")
     else:
-        governor_plan = plan_governor(settings, body, state, probe_supported, killed=killed)
+        governor_plan = plan_governor(settings, body, state, probe_supported, killed=killed,
+                                      level=level, has_point=profile.operating_point(level) is not None)
 
     to_send = action.body if action.applied and action.body else raw_body
     if governor_plan.govern:
         # Arm mid-stream control for this completion, so that it can be ended.
-        rewritten = dict(body)
-        rewritten["reasoning_control"] = True
-        to_send = json.dumps(rewritten).encode("utf-8")
+        to_send = json.dumps(adapter.arm(body)).encode("utf-8")
 
     decision_id = uuid.uuid4().hex
     ledger.decisions.write(
@@ -149,6 +154,9 @@ def observe(
             "policy_reason": action.reason,
             "bucket": action.bucket,
             "model": body.get("model", ""),
+            "server": caps.kind,
+            "profile": profile.id,
+            "level": level,
             "schema_sha256": heuristic.SCHEMA_SHA256,
             "state_version": STATE_VERSION,
             "backend": decision.backend,
@@ -162,6 +170,6 @@ def observe(
             "last_user_excerpt": state.last_user_excerpt,
         }
     )
-    tracker = OutcomeTracker(decision_id=decision_id, started=started, streaming=state.stream)
-    tracker.governor_plan = governor_plan
+    tracker = OutcomeTracker(decision_id=decision_id, started=started, streaming=state.stream,
+                             governor_plan=governor_plan, adapter=adapter, profile=profile, level=level)
     return tracker, to_send

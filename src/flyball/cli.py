@@ -45,10 +45,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print("  pure passthrough: no decision is taken. Use --mode shadow to start logging.")
     if settings.governor:
         if settings.mode == "active":
-            print("  governor     on: confidence {:.2f}, cap {} chars, {:.0%} of conversations".format(
-                settings.governor_confidence, settings.governor_cap, settings.ab_treatment_share))
+            overrides = settings.governor_overrides()
+            print("  governor     on, at each level's operating point from the model profile{}; {:.0%} of conversations".format(
+                " (overridden: " + ", ".join(f"{k}={v}" for k, v in overrides.items()) + ")" if overrides else "",
+                settings.ab_treatment_share))
         else:
             print("  governor     requested, but it only acts in --mode active")
+    if settings.default_level:
+        print(f"  default level {settings.default_level} (requests that name none)")
     uvicorn.run(
         create_app(settings),
         host=settings.host,
@@ -60,33 +64,41 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def cmd_probe(args: argparse.Namespace) -> int:
-    from .upstream import probe_sync
+    from .profiles import all_profiles, load_profiles, resolve
+    from .servers import IN_PLACE, probe_sync
 
     settings = _settings_from(args)
-    caps = probe_sync(settings.upstream, settings.upstream_api_key)
+    caps = probe_sync(settings.upstream, settings.upstream_api_key, settings.server)
+    profiles = all_profiles(load_profiles(settings.profiles_path) if settings.profiles_path else [])
+    profile = resolve(caps.model_names(), profiles, settings.profile)
 
     if args.json:
-        print(json.dumps(caps.as_dict(), indent=2))
+        print(json.dumps({"server": caps.as_dict(), "profile": profile.describe()}, indent=2))
         return 0 if caps.reachable else 1
 
-    def mark(ok: bool) -> str:
-        return "yes" if ok else "no "
+    def mark(ok) -> str:
+        return "?  " if ok is None else ("yes" if ok else "no ")
 
     print(f"upstream             {settings.upstream}")
     print(f"  reachable          {mark(caps.reachable)}")
-    print(f"  server             {caps.server or 'unknown'}")
-    print(f"  model              {caps.model or 'unknown'}")
+    print(f"  server             {caps.kind or 'unknown'}")
+    print(f"  model              {caps.model_alias or caps.model_id or 'unknown'}")
     print(f"  thinking toggle    {mark(caps.thinking_toggle)}   (chat_template_kwargs.enable_thinking)")
-    print(f"  reasoning control  {mark(caps.reasoning_control)}   (POST /v1/chat/completions/control)")
-    print(f"  probe action       {mark(caps.probe_action)}   (ask the model mid-reasoning)")
+    print(f"  reasoning effort   {mark(caps.effort_field)}   (the template understands reasoning_effort)")
+    print(f"  end reasoning      {caps.end_reasoning:9}   (close the reasoning mid-stream)")
+    print(f"  probe              {caps.probe:9}   (ask the model mid-reasoning)")
+    print(f"profile              {profile.id}")
+    print(f"  levels             {', '.join(profile.level_names()) or 'unknown'}")
+    print(f"  default level      {settings.default_level or profile.default_level or 'unknown'}")
+    print(f"  governed levels    {', '.join(sorted(profile.governor)) or 'none'}")
     for note in caps.notes:
         print(f"  note: {note}")
     if caps.auth_required:
         print("\nSet FLYBALL_UPSTREAM_API_KEY and probe again.")
-    elif caps.reasoning_control and caps.probe_action:
+    elif caps.end_reasoning == IN_PLACE and caps.probe == IN_PLACE:
         print("\nThis upstream can be governed: flyball can ask the model mid-reasoning and close it.")
-    elif caps.reasoning_control:
-        print("\nThis upstream can be governed: flyball can close the reasoning mid-stream.")
+    elif caps.end_reasoning == IN_PLACE:
+        print("\nThis upstream can only be budgeted: flyball can close the reasoning, not ask the model.")
     elif caps.reachable:
         print("\nThis upstream can only be configured, not governed: no mid-stream control.")
     return 0 if caps.reachable else 1

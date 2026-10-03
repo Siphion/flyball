@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from typing import Callable
 
 from .config import Settings
 from .heuristic import Decision
@@ -54,12 +55,19 @@ def conversation_bucket(body: dict, treatment_share: float) -> str:
     return "treatment" if position < treatment_share else "control"
 
 
+def _thinking_off(body: dict) -> dict:
+    rewritten = dict(body)
+    rewritten["chat_template_kwargs"] = dict(body.get("chat_template_kwargs") or {}, enable_thinking=False)
+    return rewritten
+
+
 def plan(
     settings: Settings,
     body: dict,
     state: RequestState,
     decision: Decision,
     killed: bool,
+    render_off: Callable[[dict], dict] = _thinking_off,
 ) -> Plan:
     if settings.mode != "active":
         return Plan(False, False, "mode is " + settings.mode)
@@ -85,8 +93,9 @@ def plan(
     if bucket == "control":
         return Plan(False, True, "control bucket", bucket)
 
-    rewritten = dict(body)
-    rewritten["chat_template_kwargs"] = dict(kwargs, enable_thinking=False)
+    # How a request asks for no reasoning depends on the server and the model;
+    # the caller passes it in (servers.py, profiles.py).
+    rewritten = render_off(body)
     return Plan(True, True, "thinking disabled", bucket, json.dumps(rewritten).encode("utf-8"))
 
 
@@ -108,12 +117,16 @@ def plan_governor(
     state: RequestState,
     probe_supported: bool,
     killed: bool,
+    level: str = "",
+    has_point: bool = True,
 ) -> GovernorPlan:
     """Whether Gate B governs this request. Every gate is, again, a reason not to.
 
     The governor asks the model, mid-reasoning, for its final answer in a box, and
     cuts once the model is confident in it. That was measured on questions whose
-    answer is a number; anything else is left alone until it has been measured too.
+    answer is a number or an option letter, at given reasoning levels; anything
+    else is left alone until it has been measured too. `has_point` says whether the
+    model's profile has an operating point for the request's `level`.
     """
     if settings.mode != "active" or not settings.governor:
         return GovernorPlan(False, False, "governor is off")
@@ -129,6 +142,8 @@ def plan_governor(
         return GovernorPlan(False, False, "a code request: the probe asks for a number")
     if not (state.math_markers or state.numeric_answer_markers or state.choice_options >= 3):
         return GovernorPlan(False, False, "not a question with a numeric or multiple-choice answer")
+    if not has_point:
+        return GovernorPlan(False, False, "no operating point for level {!r} on this model".format(level))
     if not probe_supported:
         return GovernorPlan(False, False, "the upstream has no probe action")
 

@@ -18,6 +18,7 @@ import hmac
 import json
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import AsyncIterator
 
 import httpx
@@ -25,10 +26,11 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import Settings
-from .governor import Governor, GovernorConfig
+from .governor import Governor
 from .ledger import Ledger
-from .shadow import observe
-from .upstream import ProbeSupport
+from .profiles import all_profiles, load_profiles
+from .servers import IN_PLACE, Discovery
+from .shadow import OutcomeTracker, observe
 
 log = logging.getLogger("flyball.proxy")
 
@@ -115,7 +117,11 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.settings = settings
     # In off mode nothing is recorded: no ledger, no files, no observation.
     app.state.ledger = Ledger(settings.data_dir) if settings.mode != "off" else None
-    app.state.probe_support = ProbeSupport()
+    app.state.discovery = Discovery(settings.server)
+    app.state.profiles = all_profiles(load_profiles(settings.profiles_path) if settings.profiles_path else [])
+    if settings.profile and settings.profile != "legacy" and settings.profile not in {
+            p.id for p in app.state.profiles}:
+        raise ValueError(f"FLYBALL_PROFILE names an unknown profile: {settings.profile!r}")
 
     @app.get("/flyball/health")
     async def health() -> JSONResponse:
@@ -134,10 +140,15 @@ def create_app(settings: Settings) -> FastAPI:
                 "thresholds": settings.thresholds,
                 "governor": {
                     "enabled": settings.mode == "active" and settings.governor,
-                    "probe_supported": app.state.probe_support.value,
-                    "confidence": settings.governor_confidence,
-                    "cap": settings.governor_cap,
+                    "probe_supported": app.state.discovery.caps.probe == IN_PLACE,
+                    "overrides": settings.governor_overrides(),
                 },
+                "server": {
+                    "kind": app.state.discovery.caps.kind,
+                    "model": app.state.discovery.caps.model_alias or app.state.discovery.caps.model_id,
+                    "default_level": settings.default_level,
+                },
+                "profiles": [p.describe() for p in app.state.profiles],
                 "upstream": settings.upstream,
                 "upstream_reachable": upstream_ok,
             }
@@ -154,35 +165,22 @@ def create_app(settings: Settings) -> FastAPI:
 
 
 def _start_governor(
-    client: httpx.AsyncClient, settings: Settings, body: bytes, headers: dict
+    client: httpx.AsyncClient, settings: Settings, body: bytes, headers: dict, tracker: OutcomeTracker
 ) -> Governor | None:
-    """A governor for one completion, talking to the upstream's control endpoint."""
+    """A governor for one completion, at the operating point the model's profile
+    gives for the request's reasoning level, adjusted by any override that is set."""
     try:
         model = str(json.loads(body).get("model") or "")
     except (ValueError, AttributeError):
         model = ""
-
-    async def control(payload: dict) -> dict:
-        reply = await client.post(
-            settings.upstream_url("/v1/chat/completions/control"),
-            json=payload,
-            headers=headers,
-            timeout=10.0,
-        )
-        try:
-            data = reply.json()
-        except ValueError:
-            data = {}
-        if reply.status_code != 200:
-            return {"success": False, "message": f"HTTP {reply.status_code}: {str(data)[:120]}"}
-        return data
-
-    config = GovernorConfig(
-        confidence=settings.governor_confidence,
-        cap=settings.governor_cap,
-        anchor=settings.governor_anchor,
-    )
-    return Governor(config=config, control=control, model=model)
+    point = tracker.profile.operating_point(tracker.level)
+    if point is None or tracker.adapter is None:
+        return None
+    overrides = settings.governor_overrides()
+    if overrides:
+        point = replace(point, **overrides)
+    controller = tracker.adapter.controller(client, settings.upstream, headers, model)
+    return Governor(config=point, control=controller, model=model, protocol=tracker.profile.probe)
 
 
 async def _forward(app: FastAPI, settings: Settings, path: str, request: Request) -> Response:
@@ -222,11 +220,14 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
     ):
         try:
             probe_supported = False
+            adapter = caps = None
             if settings.mode == "active" and settings.governor:
-                probe_supported = await app.state.probe_support.supported(
-                    client, settings.upstream, control_headers
+                adapter, caps = await app.state.discovery.get(
+                    client, settings.upstream, control_headers, check_probe=True
                 )
-            tracker, body = observe(ledger, settings, body, probe_supported=probe_supported)
+                probe_supported = caps.probe == IN_PLACE
+            tracker, body = observe(ledger, settings, body, probe_supported=probe_supported,
+                                    adapter=adapter, caps=caps, profiles=app.state.profiles)
         except Exception:  # observation must never cost a response
             # `body` is only reassigned on success, so a failure here always
             # forwards the original request.
@@ -264,7 +265,7 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
             tracker.unreadable = True
         plan = tracker.governor_plan
         if plan is not None and plan.govern and reply.status_code == 200 and not tracker.unreadable:
-            governor = _start_governor(client, settings, body, control_headers)
+            governor = _start_governor(client, settings, body, control_headers, tracker)
 
     async def passthrough() -> AsyncIterator[bytes]:
         completed = False

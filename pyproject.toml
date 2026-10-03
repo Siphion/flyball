@@ -15,6 +15,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.4"]
+# The research tools and the fitting of heads and calibrations.
+research = ["numpy>=1.24"]
+# Local encoders for decision backends (Hugging Face, Laya).
+encoders = ["numpy>=1.24", "torch>=2.1", "transformers>=4.40"]
 
 [project.scripts]
 flyballd = "flyball.cli:main"
