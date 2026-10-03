@@ -23,6 +23,9 @@ model, every so often, what its final answer would be and how sure it is, and cl
 reasoning as soon as the model is confident. Every client you already use (a chat UI, an
 agent, a script) gets the benefit at once, without changing anything.
 
+It is for local reasoning models that overthink: the longer a model runs on past its
+answer, the more flyball saves. A model that stops on its own leaves little to cut.
+
 > [!IMPORTANT]
 > flyball is a **research preview**. The results below come from one model on one GPU,
 > measured on a few hundred problems. The governor needs a small addition to llama.cpp
