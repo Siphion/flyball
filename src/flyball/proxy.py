@@ -15,6 +15,7 @@ In `off` mode this module is the whole program.
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -24,8 +25,10 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import Settings
+from .governor import Governor, GovernorConfig
 from .ledger import Ledger
 from .shadow import observe
+from .upstream import ProbeSupport
 
 log = logging.getLogger("flyball.proxy")
 
@@ -112,6 +115,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.settings = settings
     # In off mode nothing is recorded: no ledger, no files, no observation.
     app.state.ledger = Ledger(settings.data_dir) if settings.mode != "off" else None
+    app.state.probe_support = ProbeSupport()
 
     @app.get("/flyball/health")
     async def health() -> JSONResponse:
@@ -128,6 +132,12 @@ def create_app(settings: Settings) -> FastAPI:
                 "mode": settings.mode,
                 "kill_switch": settings.kill_switch.exists(),
                 "thresholds": settings.thresholds,
+                "governor": {
+                    "enabled": settings.mode == "active" and settings.governor,
+                    "probe_supported": app.state.probe_support.value,
+                    "confidence": settings.governor_confidence,
+                    "cap": settings.governor_cap,
+                },
                 "upstream": settings.upstream,
                 "upstream_reachable": upstream_ok,
             }
@@ -141,6 +151,34 @@ def create_app(settings: Settings) -> FastAPI:
         return await _forward(app, settings, path, request)
 
     return app
+
+
+def _start_governor(
+    client: httpx.AsyncClient, settings: Settings, body: bytes, headers: dict
+) -> Governor | None:
+    """A governor for one completion, talking to the upstream's control endpoint."""
+    try:
+        model = str(json.loads(body).get("model") or "")
+    except (ValueError, AttributeError):
+        model = ""
+
+    async def control(payload: dict) -> dict:
+        reply = await client.post(
+            settings.upstream_url("/v1/chat/completions/control"),
+            json=payload,
+            headers=headers,
+            timeout=10.0,
+        )
+        try:
+            data = reply.json()
+        except ValueError:
+            data = {}
+        if reply.status_code != 200:
+            return {"success": False, "message": f"HTTP {reply.status_code}: {str(data)[:120]}"}
+        return data
+
+    config = GovernorConfig(confidence=settings.governor_confidence, cap=settings.governor_cap)
+    return Governor(config=config, control=control, model=model)
 
 
 async def _forward(app: FastAPI, settings: Settings, path: str, request: Request) -> Response:
@@ -164,6 +202,9 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
         headers["Authorization"] = f"Bearer {settings.upstream_api_key}"
 
     body = await request.body()
+    control_headers = (
+        {"Authorization": f"Bearer {settings.upstream_api_key}"} if settings.upstream_api_key else {}
+    )
 
     # The decision is taken before the request leaves, for two reasons: a
     # non-streaming upstream only answers once generation is over, so timing has
@@ -176,7 +217,12 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
         and path.rstrip("/").endswith("chat/completions")
     ):
         try:
-            tracker, body = observe(ledger, settings, body)
+            probe_supported = False
+            if settings.mode == "active" and settings.governor:
+                probe_supported = await app.state.probe_support.supported(
+                    client, settings.upstream, control_headers
+                )
+            tracker, body = observe(ledger, settings, body, probe_supported=probe_supported)
         except Exception:  # observation must never cost a response
             # `body` is only reassigned on success, so a failure here always
             # forwards the original request.
@@ -205,12 +251,16 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
             status_code=502,
         )
 
+    governor = None
     if tracker is not None:
         tracker.status = reply.status_code
         if "content-encoding" in reply.headers:
             # A compressed body cannot be read from a raw copy; the outcome row
             # will carry the status and timings only.
             tracker.unreadable = True
+        plan = tracker.governor_plan
+        if plan is not None and plan.govern and reply.status_code == 200 and not tracker.unreadable:
+            governor = _start_governor(client, settings, body, control_headers)
 
     async def passthrough() -> AsyncIterator[bytes]:
         completed = False
@@ -221,13 +271,21 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
                         tracker.feed(chunk)
                     except Exception:
                         log.exception("outcome tracking failed for one chunk")
+                if governor is not None:
+                    # Reads a copy and never raises; the chunk goes out unchanged.
+                    governor.feed(chunk)
                 yield chunk
             completed = True
         finally:
             await reply.aclose()
+            if governor is not None:
+                await governor.close()
             if tracker is not None:
                 try:
-                    ledger.outcomes.write(tracker.finish(completed))
+                    outcome = tracker.finish(completed)
+                    if governor is not None:
+                        outcome["governor"] = governor.summary()
+                    ledger.outcomes.write(outcome)
                 except Exception:
                     log.exception("could not record the outcome")
 

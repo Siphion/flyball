@@ -20,6 +20,8 @@ def _settings_from(args: argparse.Namespace) -> Settings:
             setattr(settings, name, value)
     if getattr(args, "data_dir", None):
         settings.data_dir = Path(args.data_dir)
+    if getattr(args, "governor", False):
+        settings.governor = True
     settings.__post_init__()
     return settings
 
@@ -41,6 +43,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"  upstream     {settings.upstream}")
     if settings.mode == "off":
         print("  pure passthrough: no decision is taken. Use --mode shadow to start logging.")
+    if settings.governor:
+        if settings.mode == "active":
+            print("  governor     on: confidence {:.2f}, cap {} chars, {:.0%} of conversations".format(
+                settings.governor_confidence, settings.governor_cap, settings.ab_treatment_share))
+        else:
+            print("  governor     requested, but it only acts in --mode active")
     uvicorn.run(
         create_app(settings),
         host=settings.host,
@@ -70,10 +78,13 @@ def cmd_probe(args: argparse.Namespace) -> int:
     print(f"  model              {caps.model or 'unknown'}")
     print(f"  thinking toggle    {mark(caps.thinking_toggle)}   (chat_template_kwargs.enable_thinking)")
     print(f"  reasoning control  {mark(caps.reasoning_control)}   (POST /v1/chat/completions/control)")
+    print(f"  probe action       {mark(caps.probe_action)}   (ask the model mid-reasoning)")
     for note in caps.notes:
         print(f"  note: {note}")
     if caps.auth_required:
         print("\nSet FLYBALL_UPSTREAM_API_KEY and probe again.")
+    elif caps.reasoning_control and caps.probe_action:
+        print("\nThis upstream can be governed: flyball can ask the model mid-reasoning and close it.")
     elif caps.reasoning_control:
         print("\nThis upstream can be governed: flyball can close the reasoning mid-stream.")
     elif caps.reachable:
@@ -101,6 +112,11 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--host")
     serve.add_argument("--port", type=int)
     serve.add_argument("--mode", choices=MODES)
+    serve.add_argument(
+        "--governor",
+        action="store_true",
+        help="in active mode, close the reasoning once the model has settled (needs the probe action)",
+    )
     serve.set_defaults(func=cmd_serve)
 
     probe = sub.add_parser("probe", help="report what the upstream supports", parents=[common])

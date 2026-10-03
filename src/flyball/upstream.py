@@ -9,6 +9,7 @@ producing a confusing failure halfway through a generation.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import asdict, dataclass, field
 
 import httpx
@@ -34,6 +35,11 @@ class Capabilities:
 
     # Static ceiling on thinking tokens, if the server offers one.
     reasoning_budget: bool = False
+
+    # Can the server probe a live completion, asking the model for its answer
+    # mid-reasoning? This is what the Gate B governor needs (the `probe` control
+    # action; see docs/gate-b-research.md, section 6).
+    probe_action: bool = False
 
     notes: list[str] = field(default_factory=list)
 
@@ -82,8 +88,59 @@ async def probe(base_url: str, api_key: str = "", timeout: float = 20.0) -> Capa
 
         await _probe_thinking_toggle(client, base, caps)
         await _probe_reasoning_control(client, base, caps)
+        caps.probe_action = await probe_action_supported(client, base)
+        if not caps.probe_action:
+            caps.notes.append("no probe control action: the governor cannot ask the model mid-reasoning")
 
     return caps
+
+
+# A completion id that cannot exist. A server that knows the probe action answers
+# that there is no such completion; one that does not know it refuses the action.
+# Either way nothing is generated, so the check is cheap enough to repeat.
+PROBE_CHECK_ID = "flyball-capability-check"
+
+
+async def probe_action_supported(
+    client: httpx.AsyncClient, base: str, headers: dict | None = None
+) -> bool:
+    try:
+        reply = await client.post(
+            f"{base}/v1/chat/completions/control",
+            json={"id": PROBE_CHECK_ID, "action": "probe", "suffix": " "},
+            headers=headers,
+            timeout=5.0,
+        )
+        if reply.status_code != 200:
+            return False
+        body = reply.json()
+    except Exception:  # noqa: BLE001 - anything unexpected means: not supported
+        return False
+    return body.get("success") is False and "no active completion" in str(body.get("message", ""))
+
+
+class ProbeSupport:
+    """Whether the upstream offers the probe action, checked lazily and cached.
+
+    Lazily, because the upstream may start after flyball or be swapped for another
+    server while flyball runs. A negative answer is kept for less time than a
+    positive one, so a server that comes up is picked up quickly.
+    """
+
+    def __init__(self, ttl_supported: float = 300.0, ttl_missing: float = 30.0) -> None:
+        self.ttl_supported = ttl_supported
+        self.ttl_missing = ttl_missing
+        self.value = False
+        self.checked_at = 0.0
+
+    async def supported(self, client: httpx.AsyncClient, base: str, headers: dict | None = None) -> bool:
+        now = time.monotonic()
+        ttl = self.ttl_supported if self.value else self.ttl_missing
+        if self.checked_at and now - self.checked_at < ttl:
+            return self.value
+        self.value = await probe_action_supported(client, base, headers)
+        self.checked_at = now
+        return self.value
 
 
 async def _probe_thinking_toggle(client: httpx.AsyncClient, base: str, caps: Capabilities) -> None:

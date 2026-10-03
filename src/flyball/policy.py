@@ -88,3 +88,51 @@ def plan(
     rewritten = dict(body)
     rewritten["chat_template_kwargs"] = dict(kwargs, enable_thinking=False)
     return Plan(True, True, "thinking disabled", bucket, json.dumps(rewritten).encode("utf-8"))
+
+
+@dataclass
+class GovernorPlan:
+    govern: bool
+    would_govern: bool
+    reason: str
+    bucket: str = ""
+
+    def as_dict(self) -> dict:
+        return {"govern": self.govern, "would_govern": self.would_govern,
+                "reason": self.reason, "bucket": self.bucket}
+
+
+def plan_governor(
+    settings: Settings,
+    body: dict,
+    state: RequestState,
+    probe_supported: bool,
+    killed: bool,
+) -> GovernorPlan:
+    """Whether Gate B governs this request. Every gate is, again, a reason not to.
+
+    The governor asks the model, mid-reasoning, for its final answer in a box, and
+    cuts once the model is confident in it. That was measured on questions whose
+    answer is a number; anything else is left alone until it has been measured too.
+    """
+    if settings.mode != "active" or not settings.governor:
+        return GovernorPlan(False, False, "governor is off")
+    if killed:
+        return GovernorPlan(False, False, "kill switch is set")
+    if not state.stream:
+        return GovernorPlan(False, False, "not streaming: there is no mid-stream to govern")
+    if state.client_disabled_thinking or state.client_effort == "none":
+        return GovernorPlan(False, False, "the client turned reasoning off")
+    if state.has_tools or state.n_images:
+        return GovernorPlan(False, False, "tools or images: not measured")
+    if state.code_request_markers:
+        return GovernorPlan(False, False, "a code request: the probe asks for a number")
+    if not (state.math_markers or state.numeric_answer_markers):
+        return GovernorPlan(False, False, "not a question with a numeric answer")
+    if not probe_supported:
+        return GovernorPlan(False, False, "the upstream has no probe action")
+
+    bucket = conversation_bucket(body, settings.ab_treatment_share)
+    if bucket == "control":
+        return GovernorPlan(False, True, "control bucket", bucket)
+    return GovernorPlan(True, True, "governed", bucket)

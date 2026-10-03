@@ -75,6 +75,17 @@ class Settings:
     # are the control arm, logged as "would have applied".
     ab_treatment_share: float = field(default_factory=lambda: _env_float("FLYBALL_AB_SHARE", 0.5))
 
+    # Gate B, the mid-stream governor (docs/gate-b-research.md, sections 5 to 7).
+    # It acts only in active mode, only when switched on here, and only with an
+    # upstream that offers the `probe` control action. The defaults are the
+    # operating point measured live: cut once the model is 0.8 confident in its
+    # answer, and in any case at 3,200 characters of reasoning.
+    governor: bool = field(
+        default_factory=lambda: _env("FLYBALL_GOVERNOR", "off").lower() in ("1", "on", "true", "yes")
+    )
+    governor_confidence: float = field(default_factory=lambda: _env_float("FLYBALL_GOVERNOR_CONFIDENCE", 0.8))
+    governor_cap: int = field(default_factory=lambda: _env_int("FLYBALL_GOVERNOR_CAP", 3200))
+
     # Local models are slow. A short read timeout would abort perfectly healthy
     # generations, so only connect and write are bounded by default.
     connect_timeout: float = 5.0

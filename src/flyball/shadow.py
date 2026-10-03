@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from . import heuristic
 from .config import Settings
 from .ledger import Ledger
-from .policy import plan
+from .policy import GovernorPlan, plan, plan_governor
 from .state import STATE_VERSION, build_state
 
 
@@ -35,6 +35,8 @@ class OutcomeTracker:
     finish_reason: str = ""
     saw_done: bool = False
     unreadable: bool = False
+    # Gate B's plan for this request; the proxy starts a governor when it says so.
+    governor_plan: GovernorPlan | None = None
     _buffer: bytes = b""
     _body: list = field(default_factory=list)
 
@@ -105,7 +107,7 @@ class OutcomeTracker:
 
 
 def observe(
-    ledger: Ledger, settings: Settings, raw_body: bytes
+    ledger: Ledger, settings: Settings, raw_body: bytes, probe_supported: bool = False
 ) -> tuple[OutcomeTracker | None, bytes]:
     """Decide on a chat completion request, record the decision, and return a
     tracker plus the body to send: the original, unless active mode rewrote it."""
@@ -120,7 +122,21 @@ def observe(
     started = time.time()
     decision = heuristic.decide(state)
     decided_in = time.time() - started
-    action = plan(settings, body, state, decision, killed=settings.kill_switch.exists())
+    killed = settings.kill_switch.exists()
+    action = plan(settings, body, state, decision, killed=killed)
+
+    if action.applied:
+        # Gate A switched thinking off: there is no reasoning left for Gate B.
+        governor_plan = GovernorPlan(False, False, "thinking was switched off by Gate A")
+    else:
+        governor_plan = plan_governor(settings, body, state, probe_supported, killed=killed)
+
+    to_send = action.body if action.applied and action.body else raw_body
+    if governor_plan.govern:
+        # Arm mid-stream control for this completion, so that it can be ended.
+        rewritten = dict(body)
+        rewritten["reasoning_control"] = True
+        to_send = json.dumps(rewritten).encode("utf-8")
 
     decision_id = uuid.uuid4().hex
     ledger.decisions.write(
@@ -141,9 +157,11 @@ def observe(
             "probabilities": decision.probabilities,
             "confidence": decision.confidence,
             "features": state.features(),
+            "governor": governor_plan.as_dict(),
             "last_user_hash": state.last_user_hash,
             "last_user_excerpt": state.last_user_excerpt,
         }
     )
     tracker = OutcomeTracker(decision_id=decision_id, started=started, streaming=state.stream)
-    return tracker, (action.body if action.applied and action.body else raw_body)
+    tracker.governor_plan = governor_plan
+    return tracker, to_send

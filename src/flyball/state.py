@@ -18,7 +18,7 @@ EXCERPT_CHARS = 600
 
 # Bump whenever a feature is added or its meaning changes. Every decision row
 # carries it, so that a dataset never mixes features computed two different ways.
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 # A request *for* code, as opposed to code already present in the message.
 _CODE_REQUEST = re.compile(
@@ -35,6 +35,14 @@ _CODE = re.compile(
 _MATH = re.compile(
     r"\d\s*[-+*/^]\s*\d|\bprobabilit|\bequation|\bsolve\b|\bprove\b|\bmod\b|\bderivative|"
     r"\bintegral|\bhow many\b|\bat what time\b|km/h",
+    re.I,
+)
+# A question whose answer is a number or a short value. The governor's probe asks
+# the model for exactly that, so it only governs questions like these.
+_NUMERIC_ANSWER = re.compile(
+    r"\bhow (much|many|long|far|old|often)\b|\bcompute\b|\bcalculate\b|\bfind the\b|"
+    r"\bwhat is the (value|sum|product|number|total|probability|remainder|smallest|largest|area|"
+    r"perimeter|volume|average|mean|cost|price)\b|\$[^$\n]+\$|\\frac|\\boxed|\\sqrt",
     re.I,
 )
 _REASONING = re.compile(
@@ -78,7 +86,11 @@ class RequestState:
     last_user_chars: int
     total_chars: int
     code_markers: int
+    # Stricter than code_markers: the user asks for code, or pastes a code block.
+    # A line of prose that ends in a semicolon is not code.
+    code_request_markers: int
     math_markers: int
+    numeric_answer_markers: int
     reasoning_markers: int
     format_markers: int
     client_effort: str
@@ -126,7 +138,9 @@ def build_state(body: dict) -> RequestState:
         last_user_chars=len(last_user),
         total_chars=total_chars,
         code_markers=len(_CODE.findall(last_user)) + len(_CODE_REQUEST.findall(last_user)),
+        code_request_markers=len(_CODE_REQUEST.findall(last_user)) + last_user.count("```") // 2,
         math_markers=len(_MATH.findall(last_user)),
+        numeric_answer_markers=len(_NUMERIC_ANSWER.findall(last_user)),
         reasoning_markers=len(_REASONING.findall(last_user)),
         format_markers=len(_FORMAT.findall(last_user)),
         client_effort=str(body.get("reasoning_effort") or ""),
