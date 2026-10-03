@@ -471,3 +471,43 @@ cutting by ten points.
 Caveat for everyday use: every measurement so far runs at the highest reasoning
 effort, where the model overthinks the most. A server's default is usually lower,
 and so will the gains be; that has to be measured on its own.
+
+## 10. Code: a probe that works on problems that do not need it
+
+Code has no short final answer to ask for. The probe for code asks instead, inside
+the reasoning, "Is my solution settled, so that I can write the final code now?",
+and reads the probabilities of yes and no from the first token, where the server
+reports real ones (`probe_traces.py --protocol code`). The teacher closes the
+reasoning at each checkpoint, has the model write the code, and runs MBPP's tests on
+it in a sandbox (`tools/sandbox.py`: one Docker container per problem, no network, a
+read-only filesystem, bounded memory, CPU and processes, ten seconds per program).
+
+150 problems from MBPP's training split (MBPP+ is built on its test split, kept for
+the public results), 1,272 checkpoints. The readiness the model reports tracks how
+often its code passes:
+
+| readiness | checkpoints | code passes |
+|---|---|---|
+| 0.50–0.70 | 37 | 54% |
+| 0.70–0.80 | 329 | 78% |
+| 0.80–0.85 | 673 | 91% |
+| 0.85–0.90 | 227 | 96% |
+
+The signal is real but squeezed: the model says yes nearly always, and the useful
+range is narrow.
+
+And on MBPP it is not needed. Code written after 200 characters of reasoning passes
+the tests 87% of the time; code written after the whole reasoning passes 80% of the
+time, because 28 of the 150 reasonings, nearly one in five, never end before the
+token limit. They are not loops: no sentence repeats in their last 8,000 characters.
+The model has a working solution and goes on checking ever stranger cases. With the
+best operating points chosen by cross-validation, a fixed budget of 200 characters
+and the self-probing governor end up doing the same thing, cutting at once, and the
+probe only adds its own cost.
+
+MBPP is to code what GSM8K was to maths: too easy for this model to need governing.
+Whether the readiness probe beats a fixed budget has to be measured on code that
+needs its reasoning; until then flyball does not govern code requests. The broader
+lesson of MBPP and MMLU-Pro together is that at the highest effort, the largest
+saving comes from deciding before the call how much to think, which is Gate A's
+question, not Gate B's.

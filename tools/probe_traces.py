@@ -54,6 +54,7 @@ import argparse
 import json
 import math
 import os
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -66,6 +67,20 @@ CLOSE_REASONING = "\n</think>\n\n"
 # in "{" leaves the model unable to write a minus sign: every negative answer came out
 # positive, with low confidence, until this was found.
 TRIAL_PREFILL = "**Final Answer**\n\n" + BOX.rstrip("{")
+
+# For code there is no short final answer to ask for. The runtime probe asks the
+# model, inside its reasoning, whether its solution is settled; the teacher closes
+# the reasoning, has the model write the code, and runs the tests. The question ends
+# on a colon: a trailing space would split " yes" from its usual token.
+READINESS_QUESTION = "\n\nIs my solution settled, so that I can write the final code now? Answer yes or no:"
+CODE_PREFILL = "```python\n"
+_CODE_BLOCK = re.compile(r"```(?:python|py)?[ \t]*\n(.*?)```", re.S)
+
+
+def reply_code(text: str) -> str | None:
+    """The last code block of a reply, the code it commits to."""
+    blocks = _CODE_BLOCK.findall(text)
+    return blocks[-1] if blocks else None
 
 
 class Upstream:
@@ -99,6 +114,45 @@ class Upstream:
             # Successive probes on one trace share a growing prefix: the server only
             # has to process the characters added since the previous checkpoint.
             "cache_prompt": True,
+        }
+        return self._post("/completion", body)["content"]
+
+    def readiness(self, prompt: str, reasoning_prefix: str) -> dict:
+        """Ask, inside the reasoning, whether the solution is settled: the code
+        counterpart of asking for a final answer. One token, read from the first
+        position, where the server reports real probabilities."""
+        body = {
+            "prompt": self.rendered(prompt) + reasoning_prefix + READINESS_QUESTION,
+            "n_predict": 1,
+            "temperature": 0,
+            "cache_prompt": True,
+            "n_probs": 20,
+        }
+        steps = self._post("/completion", body).get("completion_probabilities", [])
+        yes = no = 0.0
+        top = steps[0].get("top_logprobs", []) if steps else []
+        for candidate in top:
+            word = candidate["token"].strip().lower()
+            if word == "yes":
+                yes += math.exp(candidate["logprob"])
+            elif word == "no":
+                no += math.exp(candidate["logprob"])
+        return {
+            "p_yes": yes,
+            "p_no": no,
+            # Normalised over the two answers that mean something.
+            "readiness": yes / (yes + no) if yes + no > 0 else 0.0,
+            "token": steps[0]["token"] if steps else "",
+        }
+
+    def trial_code(self, prompt: str, reasoning_prefix: str, max_tokens: int = 640) -> str:
+        """The code the model would write if the reasoning were closed here."""
+        body = {
+            "prompt": self.rendered(prompt) + reasoning_prefix + CLOSE_REASONING + CODE_PREFILL,
+            "n_predict": max_tokens,
+            "temperature": 0,
+            "cache_prompt": True,
+            "stop": ["```"],
         }
         return self._post("/completion", body)["content"]
 
@@ -162,7 +216,7 @@ def main() -> int:
     parser.add_argument("--upstream", default="http://127.0.0.1:8081")
     parser.add_argument("--api-key", default=os.environ.get("FLYBALL_UPSTREAM_API_KEY", ""))
     parser.add_argument("--effort", default="xhigh", help="must match the effort of the traces")
-    parser.add_argument("--protocol", choices=["trial", "free"], default="trial")
+    parser.add_argument("--protocol", choices=["trial", "free", "code"], default="trial")
     parser.add_argument("--step", type=int, default=200, help="characters between checkpoints")
     parser.add_argument("--max-probes", type=int, default=12, help="per trace")
     parser.add_argument("--max-answer-tokens", type=int, default=512, help="free protocol only")
@@ -200,6 +254,8 @@ def main() -> int:
     total = sum(len(positions(t)) for t in traces)
     print("{} traces, {} checkpoints, {} already labelled, protocol {}".format(
         len(traces), total, len(done), args.protocol))
+    if args.protocol == "code":
+        return probe_code(args, cases, traces, done, upstream, positions)
 
     count = 0
     with args.out.open("a", encoding="utf-8") as handle:
@@ -248,6 +304,67 @@ def main() -> int:
                 handle.flush()
                 if count % 25 == 0:
                     print("  [{}/{}] {} @{} safe={}".format(count, total, trace["case"], position, safe))
+    print("done")
+    return 0
+
+
+def probe_code(args, cases: dict, traces: list, done: set, upstream: Upstream, positions) -> int:
+    """The `code` protocol: at each checkpoint, the runtime probe (is the solution
+    settled?) and the teacher's label (does the code written from here pass the
+    tests?). The code runs in the sandbox, one container per trace."""
+    from sandbox import program_for, run_many
+
+    count = 0
+    with args.out.open("a", encoding="utf-8") as handle:
+        for trace in traces:
+            case = cases[trace["case"]]
+            records = []
+            for position in positions(trace):
+                count += 1
+                if (trace["case"], trace["repeat"], position) in done:
+                    continue
+                prefix = trace["reasoning"][:position]
+                try:
+                    started = time.time()
+                    ready = upstream.readiness(case["prompt"], prefix)
+                    probe_seconds = time.time() - started
+                    code = upstream.trial_code(case["prompt"], prefix)
+                except Exception as exc:  # noqa: BLE001 - one failed probe is one missing label
+                    print("  [{}] {} @{} FAILED: {!r}".format(count, trace["case"], position, exc))
+                    continue
+                records.append({"position": position, "ready": ready, "code": code,
+                                "probe_seconds": round(probe_seconds, 2)})
+            if not records:
+                continue
+
+            # The uncut reply is graded the same way: by running the code it commits to.
+            uncut = reply_code(trace["content"]) or ""
+            programs = [program_for(r["code"], case["tests"], case["test_setup"]) for r in records]
+            programs.append(program_for(uncut, case["tests"], case["test_setup"]))
+            results = run_many(programs)
+            trace_correct = bool(uncut) and results[-1]["passed"]
+            for record, result in zip(records, results):
+                handle.write(json.dumps({
+                    "case": trace["case"],
+                    "repeat": trace["repeat"],
+                    "position": record["position"],
+                    "reasoning_chars": len(trace["reasoning"]),
+                    "fraction": round(record["position"] / len(trace["reasoning"]), 4),
+                    "protocol": "code",
+                    "safe": result["passed"],
+                    "trace_correct": trace_correct,
+                    "readiness": round(record["ready"]["readiness"], 4),
+                    "p_yes": round(record["ready"]["p_yes"], 4),
+                    "p_no": round(record["ready"]["p_no"], 4),
+                    "ready_token": record["ready"]["token"],
+                    "code_chars": len(record["code"]),
+                    "error": result["error"][-200:],
+                    "probe_seconds": record["probe_seconds"],
+                }, ensure_ascii=False) + "\n")
+            handle.flush()
+            print("  [{}] {}: {} checkpoints, {} pass, uncut {}".format(
+                count, trace["case"], len(records), sum(r["passed"] for r in results[:-1]),
+                "pass" if trace_correct else "fail"), flush=True)
     print("done")
     return 0
 

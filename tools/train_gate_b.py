@@ -94,13 +94,16 @@ def load_rows(traces_path: Path, cases_path: Path, probes_path: Path) -> list[di
             "total_chars": len(trace["reasoning"]) + len(trace["content"]),
             "seconds": trace["seconds"],
             "safe": bool(p["safe"]),
-            "trace_correct": bool(final.get((p["case"], p["repeat"]), trace["correct"])),
+            # The code protocol grades the uncut reply itself, by running its code.
+            "trace_correct": bool(final.get((p["case"], p["repeat"]), p.get("trace_correct", trace["correct"]))),
             "prompt": cases[p["case"]]["prompt"],
             "prefix": trace["reasoning"][: p["position"]],
             "split": split_of(p["case"]),
             "probe_seconds": p.get("probe_seconds", 0.0),
-            # Present only with the trial protocol.
-            "confidence": math.exp(p["logprob"]) if "logprob" in p else None,
+            # The model's own confidence: in its boxed answer (trial protocol), or that
+            # its solution is settled (code protocol). Absent with the free protocol.
+            "confidence": (math.exp(p["logprob"]) if "logprob" in p
+                           else p["readiness"] if "readiness" in p else None),
             "trial_answer": last_number(p["trial"]) if "trial" in p else None,
         })
     return rows
