@@ -89,7 +89,7 @@ def summarise(runs_path: Path, cases_path: Path, n_boot: int = 2000) -> None:
             # graded again from the text, with the grader as it is now
             case = cases[run["case"]]
             run["answer"] = answer_in(run["content"], case.get("answer_type", "number"))
-            run["correct"] = run["answer"] == reference_of(case)
+            run["correct"] = run["answer"] is not None and run["answer"] == reference_of(case)
         by.setdefault(run["case"], {})[run["arm"]] = run
     seen = {arm for a in by.values() for arm in a}
     arms = [arm for arm in KNOWN_ARMS if arm in seen] + sorted(seen - set(KNOWN_ARMS))
@@ -199,7 +199,7 @@ async def run(args, arms: list[tuple[str, str, GovernorConfig | None]], cases: l
                         result = await run_completion(client, args.upstream, body, governor=governor,
                                                       max_seconds=args.max_seconds or None)
                         result["answer"] = answer_in(result["content"], case.get("answer_type", "number"))
-                        result["correct"] = result["answer"] == reference
+                        result["correct"] = result["answer"] is not None and result["answer"] == reference
                         result.setdefault("cut", None)
                         result.setdefault("probes", [])
                         row.update(result)

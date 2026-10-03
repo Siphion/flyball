@@ -72,7 +72,9 @@ def request_for(case: dict, level, profile, adapter, model: str, max_tokens: int
     }
     if adapter.kind == "llama.cpp":
         body["cache_prompt"] = False  # a warm cache would favour whichever level ran second
-    return adapter.render_level(body, level, profile)
+    # `default` names no level: the server's default applies, or, through flyball,
+    # whatever Gate A chooses.
+    return body if level is None else adapter.render_level(body, level, profile)
 
 
 async def sweep(args) -> int:
@@ -81,7 +83,7 @@ async def sweep(args) -> int:
     if profile is None:
         raise SystemExit(f"unknown profile {args.profile!r}; known: {', '.join(p.id for p in profiles)}")
     levels = [name.strip() for name in args.levels.split(",") if name.strip()]
-    missing = [name for name in levels if profile.level(name) is None]
+    missing = [name for name in levels if name != "default" and profile.level(name) is None]
     if missing:
         raise SystemExit(f"profile {profile.id} has no level {missing}; it has {profile.level_names()}")
     repeats = [int(r) for r in args.repeats.split(",")]
@@ -153,7 +155,8 @@ def main() -> int:
     parser.add_argument("--profile", default="bonsai-2")
     parser.add_argument("--profiles", help="a JSON file of extra profiles")
     parser.add_argument("--server", default="llama.cpp", choices=["llama.cpp", "openai"])
-    parser.add_argument("--levels", default="none,low,medium")
+    parser.add_argument("--levels", default="none,low,medium",
+                        help="levels of the profile's ladder; `default` sends none, so the server or flyball decides")
     parser.add_argument("--repeats", default="0", help="comma-separated repeat indices to run")
     parser.add_argument("--upstream", default="http://127.0.0.1:8081")
     parser.add_argument("--api-key-file", help="read the upstream key from this file (else FLYBALL_UPSTREAM_API_KEY)")

@@ -98,3 +98,41 @@ def test_a_schedule_probes_the_first_checkpoint_past_each_point() -> None:
     assert [r["position"] for r in trace if r["schedule"]["k"]] == [320, 650, 1250, 2500]
     mark_schedule(trace, probe_points(GovernorConfig(first_probe=1200, growth=2.0, cap=None), 2500), "late")
     assert [r["position"] for r in trace if r["schedule"]["late"]] == [1250, 2500]
+
+
+@pytest.mark.parametrize(
+    "answer, reference",
+    [
+        (r"\frac12", r"\frac{1}{2}"),
+        ("0.5", r"\frac{1}{2}"),
+        ("1/2", r"\dfrac{1}{2}"),
+        (r"\left( 3, \frac{\pi}{2} \right)", r"(3,\frac{\pi}{2})"),
+        ("x = 5", "5"),
+        ("12{,}000", "12000"),
+        ("5.0", "5"),
+        (r"\text{Evelyn}", r"\text{Evelyn}"),
+        (r"\textbf{(C)}", "(C)"),
+        (r"10\%", "10"),
+        (r"90^\circ", "90"),
+        (r"\sqrt3", r"\sqrt{3}"),
+    ],
+)
+def test_latex_answers_are_compared_as_the_math_benchmark_does(answer, reference) -> None:
+    from grading import normalize_latex
+
+    assert normalize_latex(answer) == normalize_latex(reference)
+
+
+def test_latex_answers_that_differ_stay_different() -> None:
+    from grading import latex_in, normalize_latex
+
+    assert normalize_latex(r"\frac{1}{3}") != normalize_latex(r"\frac{1}{2}")
+    assert latex_in(r"so the answer is \boxed{\dfrac{14}{3}}.") == normalize_latex(r"\frac{14}{3}")
+    assert latex_in("no box here") is None
+
+
+def test_a_missing_reference_never_makes_an_answer_right() -> None:
+    from measure_reasoning_cut import answer_in, reference_of
+
+    assert reference_of({"answer_type": "code", "tests": []}) is None
+    assert answer_in("```python\nx = 1\n```", "latex") is None

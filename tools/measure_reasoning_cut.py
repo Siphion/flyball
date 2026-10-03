@@ -249,13 +249,27 @@ def final_letter(text: str) -> str | None:
 
 
 def answer_in(text: str, answer_type: str = "number") -> str | None:
-    """The answer a reply commits to, read the way its case expects it."""
-    return final_letter(text) if answer_type == "letter" else final_answer(text)
+    """The answer a reply commits to, read the way its case expects it. LaTeX
+    answers (MATH-500) are normalised by grading.py; code is graded by running it
+    (grading.grade_code), not by comparing answers."""
+    if answer_type == "letter":
+        return final_letter(text)
+    if answer_type == "latex":
+        from grading import latex_in
+
+        return latex_in(text)
+    return final_answer(text)
 
 
 def reference_of(case: dict) -> str | None:
     if case.get("answer_type") == "letter":
         return str(case["reference_answer"]).strip().upper()
+    if case.get("answer_type") == "latex":
+        from grading import normalize_latex
+
+        return normalize_latex(case["reference_answer"])
+    if case.get("answer_type") == "code":
+        return None
     return last_number(case["reference_answer"])
 
 

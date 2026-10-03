@@ -45,16 +45,22 @@ from measure_reasoning_cut import answer_in, reference_of
 
 def load_runs(runs: list[Path], imports: list[str], cases: dict) -> dict:
     """{(case, level, repeat): {"correct", "seconds"}}, every run graded again from
-    its text. An imported file contributes its never-cut runs at the level given."""
+    its text. An imported file contributes its never-cut runs at the level given.
+    Code is graded by running it against the case's tests, in the sandbox."""
     out: dict = {}
+    code: list = []
 
     def add(row: dict, level: str, repeat: int) -> None:
         case = cases.get(row["case"])
         if case is None or "error" in row or "content" not in row:
             return
+        key = (row["case"], level, repeat)
+        out[key] = {"correct": False, "seconds": float(row["seconds"])}
+        if case.get("answer_type") == "code":
+            code.append((key, case, row["content"]))
+            return
         answer = answer_in(row["content"], case.get("answer_type", "number"))
-        out[(row["case"], level, repeat)] = {"correct": answer is not None and answer == reference_of(case),
-                                            "seconds": float(row["seconds"])}
+        out[key]["correct"] = answer is not None and answer == reference_of(case)
 
     for path in runs:
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -69,6 +75,13 @@ def load_runs(runs: list[Path], imports: list[str], cases: dict) -> dict:
                 row = json.loads(line)
                 if row.get("arm", "never") == "never":
                     add(row, level, int(repeat or 0))
+    if code:
+        from grading import grade_code
+
+        for start in range(0, len(code), 40):  # one container per batch
+            batch = code[start:start + 40]
+            for (key, _, _), passed in zip(batch, grade_code([(case, text) for _, case, text in batch])):
+                out[key]["correct"] = passed
     return out
 
 

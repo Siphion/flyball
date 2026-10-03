@@ -274,6 +274,7 @@ Every number above comes from scripts in [`tools/`](tools), run against a live s
 | step | script |
 |---|---|
 | build problem sets | `build_gsm8k_cases.py`, `build_math_cases.py`, `build_mmlu_pro_cases.py`, `build_mbpp_cases.py` |
+| build the standard benchmarks, in full | `build_benchmark_cases.py` (MATH-500, GSM8K test, AIME 2024 and 2025, HumanEval+, MBPP+, GPQA Diamond); graders in `grading.py`, code tests in the sandbox (`sandbox.py --build` adds numpy) |
 | record uncut reasoning traces | `measure_reasoning_cut.py --cuts 0 --traces ...` |
 | label checkpoints with the teacher | `probe_traces.py` (`--protocol trial`, `free` or `code`) |
 | compare governors offline, choose a probe schedule | `compare_governors.py`, `train_gate_b.py` |

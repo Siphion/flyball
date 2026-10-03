@@ -6,37 +6,57 @@ read-only filesystem with a small scratch area, bounded memory, CPU and processe
 Inside, every program runs in its own process with a timeout, so one that hangs or
 crashes costs only its own result. Nothing the model wrote ever runs on the host.
 
+The standard code benchmarks (HumanEval+, MBPP+) test with numpy, which the
+plain Python image lacks: `--build` makes an image with it, once, with network;
+the programs themselves still run without any.
+
 Usage, as a check:
     python tools/sandbox.py
+    python tools/sandbox.py --build    # the image with numpy, for the EvalPlus tests
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 
-IMAGE = "python:3.12-slim"
+IMAGE = os.environ.get("FLYBALL_SANDBOX_IMAGE", "python:3.12-slim")
+NUMPY_IMAGE = "flyball-sandbox:numpy"
+NUMPY_DOCKERFILE = "FROM python:3.12-slim\nRUN pip install --no-cache-dir numpy==2.1.3\n"
 TIMEOUT_S = 10
 
 # Runs inside the container: reads a JSON list of programs on stdin, runs each in
-# its own interpreter with a timeout, and prints one JSON list of results.
+# its own interpreter with a timeout, and prints one JSON list of results. Each
+# program reaches its interpreter on stdin, not as an argument: the standard
+# benchmarks' tests can be larger than the 128 KB a single argument may hold. Any
+# failure to run one program is that program's result, never the batch's.
 HARNESS = r"""
 import json, subprocess, sys
 programs = json.load(sys.stdin)
 results = []
 for program in programs:
     try:
-        done = subprocess.run([sys.executable, "-c", program], capture_output=True,
+        done = subprocess.run([sys.executable, "-"], input=program, capture_output=True,
                               text=True, timeout=TIMEOUT)
-        results.append({"passed": done.returncode == 0, "error": done.stderr[-300:]})
+        error = done.stderr[-300:] or ("" if done.returncode == 0 else "exit code {}".format(done.returncode))
+        results.append({"passed": done.returncode == 0, "error": error})
     except subprocess.TimeoutExpired:
         results.append({"passed": False, "error": "timeout"})
+    except Exception as exc:
+        results.append({"passed": False, "error": "could not run: {!r}".format(exc)[:300]})
 print(json.dumps(results))
-""".replace("TIMEOUT", str(TIMEOUT_S))
+"""
 
 
-def run_many(programs: list[str]) -> list[dict]:
+def build_numpy_image() -> int:
+    """The sandbox image with numpy, built once from the official Python image."""
+    done = subprocess.run(["docker", "build", "-t", NUMPY_IMAGE, "-"], input=NUMPY_DOCKERFILE, text=True)
+    return done.returncode
+
+
+def run_many(programs: list[str], image: str = "", timeout_s: int = TIMEOUT_S, memory: str = "1g") -> list[dict]:
     """Run each program; a program passes when it exits cleanly (its asserts held)."""
     if not programs:
         return []
@@ -44,13 +64,13 @@ def run_many(programs: list[str]) -> list[dict]:
         "docker", "run", "--rm", "-i",
         "--network", "none",
         "--read-only", "--tmpfs", "/tmp:size=16m",
-        "--memory", "512m", "--memory-swap", "512m",
+        "--memory", memory, "--memory-swap", memory,
         "--cpus", "1", "--pids-limit", "128",
         "--security-opt", "no-new-privileges",
         "--user", "65534:65534",
-        IMAGE, "python", "-c", HARNESS,
+        image or IMAGE, "python", "-c", HARNESS.replace("TIMEOUT", str(timeout_s)),
     ]
-    budget = 30 + TIMEOUT_S * len(programs)
+    budget = 30 + timeout_s * len(programs)
     try:
         done = subprocess.run(command, input=json.dumps(programs), capture_output=True,
                               text=True, timeout=budget)
@@ -68,6 +88,8 @@ def program_for(code: str, tests: list[str], setup: str = "") -> str:
 
 
 if __name__ == "__main__":
+    if "--build" in sys.argv:
+        sys.exit(build_numpy_image())
     checks = [
         program_for("def add(a, b):\n    return a + b", ["assert add(2, 3) == 5"]),
         program_for("def add(a, b):\n    return a - b", ["assert add(2, 3) == 5"]),
