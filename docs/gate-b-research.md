@@ -511,3 +511,50 @@ needs its reasoning; until then flyball does not govern code requests. The broad
 lesson of MBPP and MMLU-Pro together is that at the highest effort, the largest
 saving comes from deciding before the call how much to think, which is Gate A's
 question, not Gate B's.
+
+## 11. A System 1 reading the reasoning: Laya
+
+The idea behind flyball is a System 1 beside the large model: a small, fast decision
+model. Section 4's bag-of-words classifier was a weak stand-in for one; here is a
+real one, [Laya](https://github.com/NandhaKishorM/laya) (a ModernBERT-large encoder
+with typed decision heads), reading the question and the end of the reasoning so
+far, and asked whether the model already has its answer. It would need no probe
+and no server patch, and could run on the CPU beside the GPU. The decision model is
+a swappable backend (`flyball.backends`): Laya in-process today, any server that
+speaks the System One protocol, Laya's own or TypeSafe's hosted Jev, tomorrow.
+
+Measured on the 4,402 labelled checkpoints of sections 5 and 10 (MATH, GSM8K, MBPP),
+by AUC against the teacher's label, every score from a model that never saw the
+problem (five folds):
+
+| reader | MATH | GSM8K | MBPP | all |
+|---|---|---|---|---|
+| Laya, zero-shot (400 MATH checkpoints) | 0.47 | | | |
+| Laya's encoder, frozen, with a logistic head | 0.67 | 0.69 | 0.60 | 0.67 |
+| Laya's encoder, fine-tuned (`tools/system1_finetune.py`) | 0.81 | 0.74 | 0.68 | **0.79** |
+| the model's own confidence, from the probe | **0.95** | **0.86** | **0.73** | **0.90** |
+
+Zero-shot, Laya reads nothing: its answers are at chance, as its authors warn of the
+base checkpoints. Fine-tuning the whole encoder lifts it a long way, and it stays
+well short of the model's own confidence, most of all on maths. The text says that
+the model has written an answer; it does not say whether that answer is right.
+
+As a governor, on the doubling schedule and at no cost to the generation, the
+fine-tuned reader needs a threshold of 0.999 or more (training drives its
+probabilities to the extremes). At 0.999 it cuts 19% of the reasoning at 90.5%
+accuracy, against 91.2% never cutting, and saves 37% of the time in total; the fixed
+budget cuts 12% and saves 57%, the probe with a cap 26% and 61%. These thresholds
+were picked on the same data, so the reader's numbers are optimistic. And at run time
+it is not free: on this machine's CPU a decision takes 0.6 to 1.2 seconds, at a
+temperature the processor did not like.
+
+So the best signal of a settled answer is the model's own confidence, and a System 1
+reading the text is a weaker, costlier substitute. A decision model's natural place
+is before the call, where it reads the request rather than the reasoning: how much
+should this request think? That is the next question (Gate A).
+
+Two practical notes. Encoding on the GPU took 0.02 s a checkpoint against 0.64 s on
+twelve CPU threads, and fine-tuning about ten minutes a fold on the RTX 3080, with
+the language model stopped to free its memory. Laya and its GPU build of PyTorch
+live in their own environment on the data disk, not in flyball's dependencies: the
+`laya` backend imports it only when used.
