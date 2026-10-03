@@ -84,4 +84,34 @@ def report(data_dir: Path) -> int:
         print("Requests it would tell not to think:      median reasoning {} chars".format(
             _median([r["outcome"].get("reasoning_chars") for r in skip])))
         print("A gate worth anything separates these two numbers.")
+    gate_a_report(rows)
     return 0
+
+
+def gate_a_report(rows: list[dict]) -> None:
+    """What the learned Gate A chose, and how the requests it moved went. Active
+    decisions are in the decision row; shadow ones, taken after forwarding, in the
+    outcome row."""
+    entries = []
+    for row in rows:
+        gate = row.get("gate_a") or (row.get("outcome") or {}).get("gate_a")
+        if isinstance(gate, dict) and "reason" in gate:
+            entries.append((row, gate))
+    if not entries:
+        return
+    print()
+    print("Gate A (learned): {} requests".format(len(entries)))
+    levels: dict[str, int] = defaultdict(int)
+    for _, gate in entries:
+        levels[gate.get("level") or "-"] += 1
+    print("  levels chosen   " + ", ".join("{} {}".format(k, v) for k, v in sorted(levels.items())))
+    abstained = sum(1 for _, g in entries if (g.get("choice") or {}).get("abstained"))
+    print("  abstained       {}".format(abstained))
+    print("  decision ms     median {}".format(_median([(g.get("choice") or {}).get("ms") for _, g in entries])))
+    moved = [r for r, g in entries if g.get("applied")]
+    kept = [r for r, g in entries if g.get("would_apply") and not g.get("applied")]
+    for name, group in (("moved", moved), ("would move, kept", kept)):
+        done = [r["outcome"] for r in group if r.get("outcome")]
+        if done:
+            print("  {:16} {:>4} requests, median {} s, re-asked {}".format(
+                name, len(group), _median([o.get("seconds") for o in done]), sum(1 for r in group if r["reasked"])))

@@ -18,7 +18,11 @@ EXCERPT_CHARS = 600
 
 # Bump whenever a feature is added or its meaning changes. Every decision row
 # carries it, so that a dataset never mixes features computed two different ways.
-STATE_VERSION = 3
+# 4: `reasoning_effort: "none"` counts as the client switching thinking off.
+STATE_VERSION = 4
+
+# How much of a request a System 1 reads to decide how much to think (Gate A).
+REQUEST_TEXT_CHARS = 2000
 
 # A request *for* code, as opposed to code already present in the message.
 _CODE_REQUEST = re.compile(
@@ -148,7 +152,22 @@ def build_state(body: dict) -> RequestState:
         reasoning_markers=len(_REASONING.findall(last_user)),
         format_markers=len(_FORMAT.findall(last_user)),
         client_effort=str(body.get("reasoning_effort") or ""),
-        client_disabled_thinking=kwargs.get("enable_thinking") is False,
+        client_disabled_thinking=kwargs.get("enable_thinking") is False or body.get("reasoning_effort") == "none",
         last_user_hash=hashlib.sha256(last_user.encode("utf-8")).hexdigest()[:16],
         last_user_excerpt=last_user[:EXCERPT_CHARS],
     )
+
+
+def request_text(body: dict, max_chars: int = REQUEST_TEXT_CHARS) -> str:
+    """The text a System 1 reads to decide how much the model should think: the
+    last user message, its beginning and its end when it is long, since a pasted
+    document usually comes first and the question last. One definition for the
+    research tools and the proxy, so that a model is trained on what it will see."""
+    last = ""
+    for message in body.get("messages") or []:
+        if isinstance(message, dict) and message.get("role") == "user":
+            last = _text_of(message.get("content"))[0]
+    if len(last) <= max_chars:
+        return last
+    half = max_chars // 2
+    return last[:half] + "\n[...]\n" + last[-half:]

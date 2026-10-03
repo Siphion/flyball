@@ -13,13 +13,16 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from typing import Awaitable, Callable
+
 from . import heuristic
 from .config import Settings
+from .gate_a import Choosers
 from .ledger import Ledger
-from .policy import GovernorPlan, plan, plan_governor
+from .policy import GovernorPlan, Plan, plan, plan_effort, plan_governor
 from .profiles import LEGACY, ModelProfile, resolve
 from .servers import LlamaCpp, OpenAICompatible, ServerCapabilities
-from .state import STATE_VERSION, build_state
+from .state import REQUEST_TEXT_CHARS, STATE_VERSION, build_state, request_text
 from .streams import Delta, SSEReader, read_message
 
 
@@ -45,6 +48,9 @@ class OutcomeTracker:
     adapter: OpenAICompatible | None = None
     profile: ModelProfile = LEGACY
     level: str = ""
+    # In shadow mode Gate A decides after the request has left; the proxy runs this
+    # and records what it would have done in the outcome row.
+    gate_a_job: Callable[[], Awaitable[dict]] | None = None
     _reader: SSEReader = field(default_factory=SSEReader)
     _body: list = field(default_factory=list)
 
@@ -96,7 +102,7 @@ class OutcomeTracker:
         }
 
 
-def observe(
+async def observe(
     ledger: Ledger,
     settings: Settings,
     raw_body: bytes,
@@ -104,13 +110,15 @@ def observe(
     adapter: OpenAICompatible | None = None,
     caps: ServerCapabilities | None = None,
     profiles: list[ModelProfile] | None = None,
+    choosers: Choosers | None = None,
 ) -> tuple[OutcomeTracker | None, bytes]:
     """Decide on a chat completion request, record the decision, and return a
     tracker plus the body to send: the original, unless active mode rewrote it.
 
     `adapter` and `caps` describe the upstream, as discovered (servers.py); without
     them the upstream is taken to be llama.cpp, as in flyball's first version.
-    `profiles` are the model profiles to match the request against."""
+    `profiles` are the model profiles to match the request against, and `choosers`
+    the Gate A models (gate_a.py)."""
     try:
         body = json.loads(raw_body)
     except ValueError:
@@ -121,27 +129,66 @@ def observe(
     adapter = adapter if adapter is not None else LlamaCpp()
     caps = caps if caps is not None else ServerCapabilities()
     profile = resolve(caps.model_names() + [str(body.get("model") or "")], profiles or [], settings.profile)
-    level = profile.requested_level(body, settings.default_level)
+    requested = profile.requested_level(body, settings.default_level)
 
     state = build_state(body)
     started = time.time()
     decision = heuristic.decide(state)
     decided_in = time.time() - started
     killed = settings.kill_switch.exists()
-    action = plan(settings, body, state, decision, killed=killed,
-                  render_off=lambda b: adapter.render_level(b, profile.off_level(), profile))
 
-    if action.applied:
+    effort = None
+    gate_a_row = None
+    gate_a_job = None
+    if settings.gate_a and choosers is not None:
+        # The learned Gate A replaces the first version's thinking switch.
+        action = Plan(False, False, "Gate A (learned) decides the reasoning level")
+        chooser, why = choosers.for_profile(profile, settings.gate_a_artifact)
+        text = request_text(body, chooser.model.max_chars if chooser else REQUEST_TEXT_CHARS)
+
+        async def decide_effort():
+            choice = await chooser.choose(state, text) if chooser else None
+            result = plan_effort(settings, body, profile, adapter, requested, choice, killed)
+            row = result.as_dict()
+            row["choice"] = choice.as_dict() if choice else None
+            row["model"] = chooser.model.features if chooser else why
+            return row, result
+
+        async def shadow_job() -> dict:
+            row, _ = await decide_effort()
+            return row
+
+        if settings.mode == "active":
+            gate_a_row, effort = await decide_effort()
+        else:
+            gate_a_job = shadow_job
+    else:
+        action = plan(settings, body, state, decision, killed=killed,
+                      render_off=lambda b: adapter.render_level(b, profile.off_level(), profile))
+
+    # The request as it will run: moved by Gate A, or with thinking switched off by
+    # the first version, or as the client sent it.
+    if effort is not None and effort.applied:
+        current, level = effort.body, effort.level
+    elif action.applied and action.body:
+        current, level = json.loads(action.body), profile.off_level().name
+    else:
+        current, level = body, requested
+
+    target = profile.level(level)
+    if (target is not None and not target.thinking) or (action.applied and level == profile.off_level().name):
         # Gate A switched thinking off: there is no reasoning left for Gate B.
         governor_plan = GovernorPlan(False, False, "thinking was switched off by Gate A")
     else:
-        governor_plan = plan_governor(settings, body, state, probe_supported, killed=killed,
+        governor_plan = plan_governor(settings, current, state, probe_supported, killed=killed,
                                       level=level, has_point=profile.operating_point(level) is not None)
 
-    to_send = action.body if action.applied and action.body else raw_body
+    to_send = raw_body
     if governor_plan.govern:
         # Arm mid-stream control for this completion, so that it can be ended.
-        to_send = json.dumps(adapter.arm(body)).encode("utf-8")
+        to_send = json.dumps(adapter.arm(current)).encode("utf-8")
+    elif current is not body:
+        to_send = action.body if action.applied and action.body else json.dumps(current).encode("utf-8")
 
     decision_id = uuid.uuid4().hex
     ledger.decisions.write(
@@ -156,7 +203,9 @@ def observe(
             "model": body.get("model", ""),
             "server": caps.kind,
             "profile": profile.id,
+            "requested_level": requested,
             "level": level,
+            "gate_a": gate_a_row,
             "schema_sha256": heuristic.SCHEMA_SHA256,
             "state_version": STATE_VERSION,
             "backend": decision.backend,
@@ -171,5 +220,6 @@ def observe(
         }
     )
     tracker = OutcomeTracker(decision_id=decision_id, started=started, streaming=state.stream,
-                             governor_plan=governor_plan, adapter=adapter, profile=profile, level=level)
+                             governor_plan=governor_plan, adapter=adapter, profile=profile, level=level,
+                             gate_a_job=gate_a_job)
     return tracker, to_send

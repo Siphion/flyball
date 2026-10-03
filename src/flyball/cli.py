@@ -22,6 +22,8 @@ def _settings_from(args: argparse.Namespace) -> Settings:
         settings.data_dir = Path(args.data_dir)
     if getattr(args, "governor", False):
         settings.governor = True
+    if getattr(args, "gate_a", False):
+        settings.gate_a = True
     settings.__post_init__()
     return settings
 
@@ -51,6 +53,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
                 settings.ab_treatment_share))
         else:
             print("  governor     requested, but it only acts in --mode active")
+    if settings.gate_a:
+        print("  gate A       {}: a System 1 picks the reasoning level{}".format(
+            "acting" if settings.mode == "active" else "logging only",
+            " (" + settings.gate_a_artifact + ")" if settings.gate_a_artifact else ", model from the profile"))
     if settings.default_level:
         print(f"  default level {settings.default_level} (requests that name none)")
     uvicorn.run(
@@ -128,6 +134,11 @@ def main(argv: list[str] | None = None) -> int:
         "--governor",
         action="store_true",
         help="in active mode, close the reasoning once the model has settled (needs the probe action)",
+    )
+    serve.add_argument(
+        "--gate-a",
+        action="store_true",
+        help="let a learned System 1 choose each request's reasoning level (needs a Gate A model)",
     )
     serve.set_defaults(func=cmd_serve)
 

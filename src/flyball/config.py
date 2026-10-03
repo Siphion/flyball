@@ -128,6 +128,20 @@ class Settings:
     # fifth, because the reply no longer picks the reasoning back up (section 8).
     governor_anchor: bool | None = field(default_factory=lambda: _env_opt_bool("FLYBALL_GOVERNOR_ANCHOR"))
 
+    # Gate A, learned: a System 1 chooses the reasoning level of each request before
+    # the call (gate_a.py). It acts only in active mode and only when switched on
+    # here; in shadow mode its choices are computed after forwarding and logged.
+    # The model comes from FLYBALL_GATE_A_ARTIFACT, or from the model's profile.
+    gate_a: bool = field(default_factory=lambda: _env("FLYBALL_GATE_A", "off").lower() in ("1", "on", "true", "yes"))
+    gate_a_artifact: str = field(default_factory=lambda: _env("FLYBALL_GATE_A_ARTIFACT"))
+    # A client that names its own reasoning level is respected (`respect`), or may
+    # only be moved to a cheaper level (`ceiling`).
+    gate_a_client_effort: str = field(default_factory=lambda: _env("FLYBALL_GATE_A_CLIENT_EFFORT", "respect"))
+    # A System 1 slower than this abstains: Gate A must never hold a request up.
+    gate_a_timeout_ms: int = field(default_factory=lambda: _env_int("FLYBALL_GATE_A_TIMEOUT_MS", 150))
+    # Gate A's own A/B split, independent of Gate B's; empty means FLYBALL_AB_SHARE.
+    gate_a_share: float | None = field(default_factory=lambda: _env_opt_float("FLYBALL_GATE_A_SHARE"))
+
     # A System One server (Laya's, Jev, ...), for decision backends that use one.
     systemone_url: str = field(default_factory=lambda: _env("FLYBALL_SYSTEMONE_URL"))
     systemone_api_key: str = field(default_factory=lambda: _env("FLYBALL_SYSTEMONE_API_KEY"))
@@ -143,6 +157,9 @@ class Settings:
             raise ValueError(f"FLYBALL_MODE must be one of {MODES}, got {self.mode!r}")
         if self.server not in SERVERS:
             raise ValueError(f"FLYBALL_SERVER must be one of {SERVERS}, got {self.server!r}")
+        if self.gate_a_client_effort not in ("respect", "ceiling"):
+            raise ValueError("FLYBALL_GATE_A_CLIENT_EFFORT must be respect or ceiling, "
+                             f"got {self.gate_a_client_effort!r}")
 
     def governor_overrides(self) -> dict:
         """The operating-point fields set in the environment, by GovernorConfig name."""

@@ -14,6 +14,7 @@ In `off` mode this module is the whole program.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -26,10 +27,12 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import Settings
+from .gate_a import Choosers
 from .governor import Governor
 from .ledger import Ledger
 from .profiles import all_profiles, load_profiles
 from .servers import IN_PLACE, Discovery
+from .policy import GovernorPlan
 from .shadow import OutcomeTracker, observe
 
 log = logging.getLogger("flyball.proxy")
@@ -118,6 +121,7 @@ def create_app(settings: Settings) -> FastAPI:
     # In off mode nothing is recorded: no ledger, no files, no observation.
     app.state.ledger = Ledger(settings.data_dir) if settings.mode != "off" else None
     app.state.discovery = Discovery(settings.server)
+    app.state.choosers = Choosers(settings.gate_a_timeout_ms / 1000)
     app.state.profiles = all_profiles(load_profiles(settings.profiles_path) if settings.profiles_path else [])
     if settings.profile and settings.profile != "legacy" and settings.profile not in {
             p.id for p in app.state.profiles}:
@@ -138,6 +142,13 @@ def create_app(settings: Settings) -> FastAPI:
                 "mode": settings.mode,
                 "kill_switch": settings.kill_switch.exists(),
                 "thresholds": settings.thresholds,
+                "gate_a": {
+                    "enabled": settings.gate_a and settings.mode != "off",
+                    "acting": settings.gate_a and settings.mode == "active",
+                    "artifact": settings.gate_a_artifact,
+                    "client_effort": settings.gate_a_client_effort,
+                    "timeout_ms": settings.gate_a_timeout_ms,
+                },
                 "governor": {
                     "enabled": settings.mode == "active" and settings.governor,
                     "probe_supported": app.state.discovery.caps.probe == IN_PLACE,
@@ -203,7 +214,7 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
     if settings.upstream_api_key:
         headers["Authorization"] = f"Bearer {settings.upstream_api_key}"
 
-    body = await request.body()
+    body = original = await request.body()
     control_headers = (
         {"Authorization": f"Bearer {settings.upstream_api_key}"} if settings.upstream_api_key else {}
     )
@@ -221,29 +232,35 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
         try:
             probe_supported = False
             adapter = caps = None
-            if settings.mode == "active" and settings.governor:
+            governing = settings.mode == "active" and settings.governor
+            if governing or settings.gate_a:
                 adapter, caps = await app.state.discovery.get(
-                    client, settings.upstream, control_headers, check_probe=True
+                    client, settings.upstream, control_headers, check_probe=governing
                 )
                 probe_supported = caps.probe == IN_PLACE
-            tracker, body = observe(ledger, settings, body, probe_supported=probe_supported,
-                                    adapter=adapter, caps=caps, profiles=app.state.profiles)
+            tracker, body = await observe(ledger, settings, body, probe_supported=probe_supported,
+                                          adapter=adapter, caps=caps, profiles=app.state.profiles,
+                                          choosers=app.state.choosers)
         except Exception:  # observation must never cost a response
             # `body` is only reassigned on success, so a failure here always
             # forwards the original request.
             log.exception("observation failed; forwarding untouched")
             tracker = None
 
-    upstream_request = client.build_request(
-        request.method,
-        url,
-        params=request.query_params,
-        headers=headers,
-        content=body,
-    )
+    def build(content: bytes) -> httpx.Request:
+        return client.build_request(request.method, url, params=request.query_params, headers=headers,
+                                    content=content)
 
+    rejected = 0
     try:
-        reply = await client.send(upstream_request, stream=True)
+        reply = await client.send(build(body), stream=True)
+        if body is not original and reply.status_code >= 400:
+            # The upstream refused the request flyball rewrote (a level it does
+            # not know, a field it rejects). Fail open: send the client's own.
+            rejected = reply.status_code
+            await reply.aclose()
+            body = original
+            reply = await client.send(build(body), stream=True)
     except httpx.RequestError as exc:
         log.warning("upstream unreachable: %s", exc)
         return JSONResponse(
@@ -257,7 +274,13 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
         )
 
     governor = None
+    gate_a_task = None
     if tracker is not None:
+        if rejected:
+            tracker.governor_plan = GovernorPlan(False, False, f"the upstream rejected the rewritten request ({rejected})")
+        if tracker.gate_a_job is not None:
+            # Shadow mode: Gate A decides now, while the model generates.
+            gate_a_task = asyncio.create_task(tracker.gate_a_job())
         tracker.status = reply.status_code
         if "content-encoding" in reply.headers:
             # A compressed body cannot be read from a raw copy; the outcome row
@@ -290,6 +313,13 @@ async def _forward(app: FastAPI, settings: Settings, path: str, request: Request
                     outcome = tracker.finish(completed)
                     if governor is not None:
                         outcome["governor"] = governor.summary()
+                    if rejected:
+                        outcome["rewrite_rejected"] = rejected
+                    if gate_a_task is not None:
+                        try:
+                            outcome["gate_a"] = await asyncio.wait_for(gate_a_task, timeout=1.0)
+                        except Exception as exc:  # noqa: BLE001 - a missing shadow decision is a log gap only
+                            outcome["gate_a"] = {"error": repr(exc)}
                     ledger.outcomes.write(outcome)
                 except Exception:
                     log.exception("could not record the outcome")
