@@ -39,7 +39,6 @@ agent, a script) gets the benefit at once, without changing anything.
 - [Design rules](#design-rules)
 - [Reproducing the research](#reproducing-the-research)
 - [Roadmap](#roadmap)
-- [Why "flyball"](#why-flyball)
 
 ## The problem
 
@@ -301,13 +300,6 @@ MBPP problems from MBPP's training split, so MBPP+ stays clean.
 - [ ] Other local models, with calibrations shared per model
 - [ ] The probe action proposed to llama.cpp, so the governor works on a stock server
 - [ ] The standard benchmarks in full: MATH-500, GSM8K, AIME, GPQA Diamond, LiveCodeBench, HumanEval+ and MBPP+
-
-## Why "flyball"
-
-The flyball governor is the spinning pair of weights James Watt put on steam engines: two
-small masses, flung outwards by the speed of the engine, that throttle the steam when it
-runs too fast. A small mechanism regulating a large one, without anyone at the controls.
-That is the idea.
 
 ## License
 
