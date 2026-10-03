@@ -25,6 +25,16 @@ has an out-of-fold score, and the operating point is chosen as for the other
 families. A hybrid is judged too: the learned governor, which costs nothing, decides
 when a probe is worth its price, and the probe decides when to cut.
 
+With --scores, the learned families read their score from a file instead of
+training the text classifier: the derived checkpoints of system1_representation.py
+or system1_reasoning.py, for example a head on the model's hidden states.
+
+With --first-probes (and --growths, --caps), the probe schedule itself is a
+choice: when the first probe comes and how fast the next ones follow, the way the
+runtime governor schedules them (flyball.governor.probe_points). The operating
+point is chosen by cross-validation like every other; --operating-point-out writes
+the one chosen on every trace as a profile fragment for FLYBALL_PROFILES.
+
 Usage:
     python tools/compare_governors.py \\
         --traces reports/gsm8k_traces.jsonl --cases reports/gsm8k_cases.json \\
@@ -37,12 +47,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 
 from train_gate_b import load_rows
+
+from flyball.governor import GovernorConfig, probe_points
 
 FOLDS = 5
 BUDGETS = [200, 400, 600, 800, 1200, 1600, 2400, 3200, 4800, 6400, 9600, 14400]
@@ -53,18 +66,30 @@ THRESHOLDS = [0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98]
 DOUBLING = [300 * 2**k for k in range(10)]
 
 
-def prepare(rows: list[dict]) -> dict:
+def mark_schedule(trace: list[dict], points: list[int], key) -> None:
+    """Mark the checkpoints a schedule probes: the first one at or past each point.
+    Points already passed by then are skipped, as the live governor skips them."""
+    seen = set()
+    for row in trace:
+        slot = max((g for g in points if row["position"] >= g), default=None)
+        row.setdefault("schedule", {})[key] = slot is not None and slot not in seen
+        if slot is not None:
+            seen.add(slot)
+
+
+def prepare(rows: list[dict], schedules: list[tuple] = ()) -> dict:
     traces = defaultdict(list)
     for row in rows:
         traces[(row["case"], row["repeat"])].append(row)
     for trace in traces.values():
         trace.sort(key=lambda r: r["position"])
-        seen = set()
+        mark_schedule(trace, DOUBLING, "doubling")
         for row in trace:
-            slot = max((g for g in DOUBLING if row["position"] >= g), default=None)
-            row["doubling"] = slot is not None and slot not in seen
-            if slot is not None:
-                seen.add(slot)
+            row["doubling"] = row["schedule"]["doubling"]
+        longest = max(r["length"] for r in trace)
+        for first, growth in schedules:
+            config = GovernorConfig(first_probe=first, growth=growth, cap=None)
+            mark_schedule(trace, probe_points(config, longest), (first, growth))
     return traces
 
 
@@ -118,19 +143,26 @@ def cross_fit(rows: list[dict], fold_of: dict, l2: float, words: bool) -> None:
         row["p"] = float(score)
 
 
-def families(learned: bool) -> dict:
+def families(learned: bool, schedules: list[tuple] = (), caps: list = (), label: str = "learned") -> dict:
     never = lambda r: False  # noqa: E731
     extra = {}
     if learned:
         extra = {
-            "learned (CPU)": [
+            label + " (no probe)": [
                 ("p {}".format(t), lambda r, t=t: r["p"] >= t, never) for t in THRESHOLDS],
-            "learned gate + self-probe": [
+            label + " gate + self-probe": [
                 ("probe at p {}, cut at confidence {}".format(g, c),
                  lambda r, g=g, c=c: r["p"] >= g and r["confidence"] >= c,
                  lambda r, g=g: r["p"] >= g)
                 for g in (0.5, 0.6, 0.7, 0.8) for c in CONFIDENCES],
         }
+    if schedules:
+        extra["self-probe, schedule + cap"] = [
+            (schedule_name(first, growth, c, cap),
+             lambda r, k=(first, growth), c=c, cap=cap: (r["schedule"][k] and r["confidence"] >= c)
+             or (cap is not None and r["position"] >= cap),
+             lambda r, k=(first, growth): r["schedule"][k])
+            for first, growth in schedules for c in CONFIDENCES for cap in caps]
     return {
         "static budget": [
             ("{} chars".format(b), lambda r, b=b: r["position"] >= b, never) for b in BUDGETS],
@@ -148,6 +180,35 @@ def families(learned: bool) -> dict:
     }
 
 
+def schedule_name(first: int, growth: float, confidence: float, cap) -> str:
+    return "first {} growth {:g} confidence {} cap {}".format(first, growth, confidence, cap)
+
+
+def load_scores(paths: list[Path]) -> dict:
+    """Checkpoint scores from derived probe files: their `readiness`."""
+    scores = {}
+    for path in paths:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                p = json.loads(line)
+                if not p.get("final") and "readiness" in p:
+                    scores[(p["case"], p["repeat"], p["position"])] = float(p["readiness"])
+    return scores
+
+
+def operating_point(traces: dict, keys: list, members: list, index: int) -> tuple | None:
+    """The member with the most of metric `index` within a point of never cutting,
+    on every trace: the point to run with."""
+    never = (lambda r: False, lambda r: False)
+    floor = metrics([outcome(traces[k], *never) for k in keys])[0] - 0.01
+    best = None
+    for name, decide, probed in members:
+        result = metrics([outcome(traces[k], decide, probed) for k in keys])
+        if result[0] >= floor and (best is None or result[index] > best[0]):
+            best = (result[index], name, result)
+    return best
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--traces", type=Path, action="append", required=True)
@@ -157,6 +218,16 @@ def main() -> int:
     parser.add_argument("--learned", action="store_true",
                         help="also judge the learned governor, cross-fitted (slower)")
     parser.add_argument("--l2", type=float, default=100.0, help="for --learned")
+    parser.add_argument("--scores", type=Path, action="append", default=[],
+                        help="checkpoint scores for the learned families, instead of training (derived probes)")
+    parser.add_argument("--scores-label", default="System 1", help="names the families that use --scores")
+    parser.add_argument("--first-probes", help="comma-separated: judge probe schedules starting here")
+    parser.add_argument("--growths", default="2", help="comma-separated growth factors of the schedules")
+    parser.add_argument("--caps", default="2400,3200,4800,none", help="caps judged with the schedules")
+    parser.add_argument("--operating-point-out", type=Path,
+                        help="write the schedule chosen on every trace as a profile fragment")
+    parser.add_argument("--profile", default="bonsai-2", help="for --operating-point-out")
+    parser.add_argument("--level", default="medium", help="for --operating-point-out: the reasoning level measured")
     parser.add_argument("--dense-only", action="store_true", help="for --learned: no word features")
     parser.add_argument(
         "--probe-cost",
@@ -177,11 +248,25 @@ def main() -> int:
         rows += load_rows(traces, cases, probes)
     if any(r["confidence"] is None for r in rows):
         parser.error("self-probing needs probes from the trial protocol")
-    traces = prepare(rows)
+    schedules = []
+    if args.first_probes:
+        schedules = [(int(f), float(g)) for f in args.first_probes.split(",") for g in args.growths.split(",")]
+    caps = [None if c.strip() == "none" else int(c) for c in args.caps.split(",")]
+    traces = prepare(rows, schedules)
     keys = sorted(traces)
     fold = {k: int(hashlib.sha256(k[0].encode()).hexdigest(), 16) % FOLDS for k in keys}
-    if args.learned:
+    label = "learned"
+    if args.scores:
+        scores = load_scores(args.scores)
+        missing = [r for r in rows if (r["case"], r["repeat"], r["position"]) not in scores]
+        if missing:
+            parser.error("{} checkpoints have no score in --scores".format(len(missing)))
+        for r in rows:
+            r["p"] = scores[(r["case"], r["repeat"], r["position"])]
+        label = args.scores_label
+    elif args.learned:
         cross_fit(rows, fold, l2=args.l2, words=not args.dense_only)
+    learned = args.learned or bool(args.scores)
     dataset = {k: traces[k][0]["dataset"] for k in keys}
     never = (lambda r: False, lambda r: False)
 
@@ -205,7 +290,7 @@ def main() -> int:
         print(header)
         print(subheader)
         judged = {}
-        for family, members in families(args.learned).items():
+        for family, members in families(learned, schedules, caps, label).items():
             per_trace, chosen = {}, []
             for f in range(FOLDS):
                 inside = [k for k in keys if fold[k] != f]
@@ -241,6 +326,26 @@ def main() -> int:
             print("    {:28} accuracy [{:+.1%}, {:+.1%}]  reasoning cut [{:+.0%}, {:+.0%}]  "
                   "per request [{:+.0%}, {:+.0%}]  in total [{:+.0%}, {:+.0%}]".format(
                       family, low[0], high[0], low[1], high[1], low[2], high[2], low[3], high[3]))
+
+    if args.operating_point_out:
+        if not schedules:
+            parser.error("--operating-point-out needs --first-probes")
+        members = families(False, schedules, caps)["self-probe, schedule + cap"]
+        best = operating_point(traces, keys, members, index=3)
+        if best is None:
+            print("\nno schedule keeps accuracy within a point of never cutting; nothing written")
+            return 1
+        _, name, result = best
+        values = dict(zip(("first", "growth", "confidence", "cap"), name.split()[1::2]))
+        point = {"confidence": float(values["confidence"]), "first_probe": int(values["first"]),
+                 "growth": float(values["growth"]), "cap": None if values["cap"] == "None" else int(values["cap"]),
+                 "anchor": True}
+        fragment = {"profiles": [{"id": args.profile, "extends": args.profile, "governor": {args.level: point}}],
+                    "measured": {"traces": len(keys), "accuracy": result[0], "reasoning_cut": result[1],
+                                 "time_saved_per_request": result[2], "time_saved_in_total": result[3],
+                                 "probes_per_trace": result[4]}}
+        args.operating_point_out.write_text(json.dumps(fragment, indent=1), encoding="utf-8")
+        print("\noperating point for {} at {}: {} -> {}".format(args.profile, args.level, name, args.operating_point_out))
     return 0
 
 

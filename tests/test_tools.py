@@ -86,3 +86,15 @@ def test_gate_a_eval_finds_a_planted_signal_and_writes_an_artifact(tmp_path, mon
     model = GateAModel.load(tmp_path / "gate_a.json")
     assert model.choose(model.predict([1.0, 0.0])) == "none"
     assert model.choose(model.predict([0.0, 0.0])) == "medium"
+
+
+def test_a_schedule_probes_the_first_checkpoint_past_each_point() -> None:
+    from compare_governors import mark_schedule
+
+    from flyball.governor import GovernorConfig, probe_points
+
+    trace = [{"position": p} for p in (150, 320, 480, 650, 1250, 2500)]
+    mark_schedule(trace, probe_points(GovernorConfig(first_probe=300, growth=2.0, cap=None), 2500), "k")
+    assert [r["position"] for r in trace if r["schedule"]["k"]] == [320, 650, 1250, 2500]
+    mark_schedule(trace, probe_points(GovernorConfig(first_probe=1200, growth=2.0, cap=None), 2500), "late")
+    assert [r["position"] for r in trace if r["schedule"]["late"]] == [1250, 2500]
