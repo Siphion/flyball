@@ -1,7 +1,7 @@
 [project]
 name = "flyballd"
 version = "0.0.1"
-description = "A System-1 governor for your local model's reasoning: closes the thinking block mid-stream when it has thought enough."
+description = "A governor for your local model's reasoning: asks the model mid-stream whether it has settled on its answer, and closes the thinking block when it has."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
